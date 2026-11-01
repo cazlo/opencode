@@ -18,7 +18,8 @@ export function SubagentBar(props: {
   status?: SubagentStatus
   started: number
   ended?: number
-  onBack: () => void
+  /** Without it the bar has no way back, as in the subagent pane. */
+  onBack?: () => void
 }) {
   const language = useLanguage()
   const [now, setNow] = createSignal(Date.now())
@@ -44,24 +45,7 @@ export function SubagentBar(props: {
       data-component="subagent-bar"
       class="relative flex h-8 w-full min-w-0 items-center gap-2 bg-v2-background-bg-base ps-3 pe-1.5 text-[12px] font-[440] leading-4 tracking-[-0.04px] whitespace-nowrap tabular-nums text-v2-text-text-faint before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-4 before:bg-[linear-gradient(to_top,var(--v2-background-bg-base),transparent)]"
     >
-      <Show when={props.status}>
-        <span class="flex size-4 shrink-0 items-center justify-center text-v2-icon-icon-faint">
-          <Switch>
-            <Match when={props.status === "running"}>
-              <SessionProgressIndicatorV2 />
-            </Match>
-            <Match when={props.status === "succeeded"}>
-              <Icon name="check" size="small" />
-            </Match>
-            <Match when={props.status === "failed"}>
-              <Icon name="circle-xmark" size="small" />
-            </Match>
-            <Match when={props.status === "interrupted"}>
-              <Icon name="outline-xmark" size="small" />
-            </Match>
-          </Switch>
-        </span>
-      </Show>
+      <Show when={props.status}>{(status) => <SubagentStatusIcon status={status()} />}</Show>
       <div class="flex min-w-0 flex-1 items-center gap-1.5">
         <For each={parts()}>
           {(part, index) => (
@@ -105,12 +89,37 @@ export function SubagentBar(props: {
           )}
         </For>
       </div>
-      <Button type="button" variant="ghost-faint" size="small" class="shrink-0 gap-1.5 px-1.5" onClick={props.onBack}>
-        {language.t("session.child.backToParent")}
-        <span class="hidden sm:block">
-          <Keybind keys={[formatKeybind("esc", language.t)]} variant="neutral" />
-        </span>
-      </Button>
+      <Show when={props.onBack}>
+        {(onBack) => (
+          <Button type="button" variant="ghost-faint" size="small" class="shrink-0 gap-1.5 px-1.5" onClick={onBack()}>
+            {language.t("session.child.backToParent")}
+            <span class="hidden sm:block">
+              <Keybind keys={[formatKeybind("esc", language.t)]} variant="neutral" />
+            </span>
+          </Button>
+        )}
+      </Show>
     </div>
+  )
+}
+
+export function SubagentStatusIcon(props: { status: SubagentStatus }) {
+  return (
+    <span class="flex size-4 shrink-0 items-center justify-center text-v2-icon-icon-faint">
+      <Switch>
+        <Match when={props.status === "running"}>
+          <SessionProgressIndicatorV2 />
+        </Match>
+        <Match when={props.status === "succeeded"}>
+          <Icon name="check" size="small" />
+        </Match>
+        <Match when={props.status === "failed"}>
+          <Icon name="circle-xmark" size="small" />
+        </Match>
+        <Match when={props.status === "interrupted"}>
+          <Icon name="outline-xmark" size="small" />
+        </Match>
+      </Switch>
+    </span>
   )
 }
