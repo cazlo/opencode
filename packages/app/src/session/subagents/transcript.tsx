@@ -1,4 +1,4 @@
-import { createMemo, ErrorBoundary, onCleanup, Show, untrack, type Accessor } from "solid-js"
+import { createEffect, createMemo, ErrorBoundary, on, onCleanup, Show, untrack, type Accessor } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { MountedSession, SessionScreen } from "@opencode/plugin/gui"
 import type { SessionUserActions } from "@opencode/session-ui/actions"
@@ -15,13 +15,18 @@ import { setPanelResizing } from "@/shell/panel-motion"
 import { ResizeHandle } from "@opencode/ui/resize-handle"
 import { SubagentBar } from "@/session/composer/subagent-bar"
 import type { TimelineActionsView } from "@/session/composer/timeline-actions"
-import { useOpenSessionRoute } from "@/session/session-identity-header"
 import type { SessionModel } from "@/session/model"
 import { SUBAGENT_PANE_WIDTH_MIN } from "@/session/session-panel-width"
 import { sessionTitle } from "@/session/title"
 import type { TimelineSessionSource } from "@/session/timeline/controller"
 import { MessageTimeline } from "@/session/timeline/message-timeline"
-import { loadOlderTimeline } from "@/session/timeline/model"
+import { PluginLinks } from "@/runtime/plugin/render"
+import {
+  enrichLeadingTurn,
+  leadingTurnPageDelay,
+  leadingTurnPageLimit,
+  loadOlderTimeline,
+} from "@/session/timeline/model"
 import type { SubagentPaneModel } from "./controller"
 import { createSubagentModelLabel } from "./model-label"
 import { SubagentList, SubagentPaneFrame } from "./pane"
@@ -39,18 +44,17 @@ export function SubagentPane(props: {
 }) {
   const language = useLanguage()
   const data = useServer().ctx.data
-  const openRoute = useOpenSessionRoute()
 
   return (
     // The handle straddles the pane's edge, so the frame clips and this wrapper does not.
     <aside
       id="subagent-pane"
-      data-component="subagent-pane"
       aria-label={language.t("session.subagents.title")}
       class="flex h-full min-h-0 shrink-0"
       classList={{
         relative: props.pane.layout().docked,
-        "absolute inset-y-0 end-0 z-40": !props.pane.layout().docked,
+        // Over the composer, which draws above the transcript's frame.
+        "absolute inset-y-0 end-0 z-[80]": !props.pane.layout().docked,
       }}
       style={{ width: `${props.pane.layout().width}px` }}
     >
@@ -79,7 +83,7 @@ export function SubagentPane(props: {
               onClose={props.pane.close}
               reserveReviewToggle={props.reserveReviewToggle}
             >
-              <SubagentList groups={props.pane.groups()} onSelect={props.pane.select} />
+              <SubagentList groups={props.pane.groups()} onSelect={props.pane.select} focus={props.pane.focus()} />
             </SubagentPaneFrame>
           }
         >
@@ -87,11 +91,7 @@ export function SubagentPane(props: {
             <SubagentPaneFrame
               title={sessionTitle(data.session.get(id)?.title) ?? language.t("session.tab.session")}
               onBack={props.pane.back}
-              onOpenFull={() => {
-                const routed = props.pane.routed()
-
-                if (routed) openRoute(routed, id)
-              }}
+              onOpenFull={() => props.pane.openFull(id)}
               onClose={props.pane.close}
               reserveReviewToggle={props.reserveReviewToggle}
             >
@@ -135,26 +135,51 @@ function SubagentTranscript(props: {
   const data = server.ctx.data
   const [load, setLoad] = createStore<{ state: "loading" | "ready" | "failed" }>({ state: "loading" })
 
+  let current = true
+  onCleanup(() => (current = false))
+
+  const info = () => data.session.get(id)
+  const messages = () => data.session.message.list(id)
+  const more = () => data.session.message.more(id)
+  const loading = () => data.session.message.loading(id)
+
+  // Like the routed timeline's load, a first page that starts mid-turn is completed with the turn's opening prompt.
   void Promise.all([
     data.session.message.sync(id),
     data.session.pending.sync(id),
     data.session.sync(id, { children: true }),
-  ]).then(
-    () => setLoad("state", "ready"),
-    () => setLoad("state", "failed"),
-  )
+  ])
+    .then(() =>
+      enrichLeadingTurn({
+        current: () => current,
+        messages,
+        more,
+        loading,
+        loadMore: () => data.session.message.loadMore(id),
+        pause: () => new Promise((resolve) => setTimeout(resolve, leadingTurnPageDelay)),
+        maxPages: leadingTurnPageLimit,
+      }).catch(() => undefined),
+    )
+    .then(
+      () => setLoad("state", "ready"),
+      () => setLoad("state", "failed"),
+    )
 
-  const info = () => data.session.get(id)
-  const messages = () => data.session.message.list(id)
-  const ready = () => load.state === "ready" || messages().length > 0
+  // Queued input that has not been delivered is no transcript: alone it does not count as loaded.
+  const ready = () => load.state === "ready" || messages().some((message) => !data.session.input.has(id, message.id))
 
-  const follow = createSubagentTimelineFollow(() => {
-    void loadOlderTimeline({
-      sessionID: () => id,
-      more: () => data.session.message.more(id),
-      loading: () => data.session.message.loading(id),
-      loadMore: (target) => data.session.message.loadMore(target),
-    }).catch(() => undefined)
+  const follow = createSubagentTimelineFollow({
+    ready,
+    more,
+    loading,
+    loadOlder: () => {
+      void loadOlderTimeline({
+        sessionID: () => id,
+        more,
+        loading,
+        loadMore: (target) => data.session.message.loadMore(target),
+      }).catch(() => undefined)
+    },
   })
 
   // Mirrors the routed session's key, so what the timeline stores about this subagent belongs to its own route.
@@ -215,7 +240,9 @@ function SubagentTranscript(props: {
             get backgroundCompaction() {
               return ui.backgroundCompaction
             },
-            navigateToSession: (child: string) => props.pane.select(child),
+            navigateToSession: (child: string) => {
+              if (!props.pane.openInPane(child)) props.pane.openFull(child)
+            },
             sessionHref: ui.sessionHref,
             readMedia: ui.readMedia,
             peekMedia: ui.peekMedia,
@@ -228,34 +255,36 @@ function SubagentTranscript(props: {
             },
           }}
         >
-          <div class="relative isolate min-h-0 flex-1 overflow-hidden">
-            <MessageTimeline
-              active
-              hideHeader
-              session={source}
-              view={props.view()}
-              screen={props.screen}
-              background={{ blocking: () => [], tasks: () => [], move: () => Promise.resolve() }}
-              actions={props.actions({ sessionID: () => id, isChild: () => true })}
-              centered={false}
-              reserveReviewToggle={false}
-              bottomInset={0}
-              anchor={(messageID) => `subagent-message-${messageID}`}
-              measurementKey={`${server.key}/${id}/subagent-pane`}
-              scroll={follow.scroll}
-              pinned={follow.pinned()}
-              onResumeScroll={follow.resume}
-              setScrollRef={follow.setScrollRef}
-              onScheduleScrollState={follow.scheduleScrollState}
-              onPin={follow.pin}
-              onUnpin={follow.unpin}
-              onUserScroll={follow.markUserScroll}
-              onHistoryScroll={follow.onHistoryScroll}
-              onSelectionInteraction={follow.selectionInteraction}
-              onContentResize={follow.contentResized}
-              setScrollToEnd={follow.setScrollToEnd}
-            />
-          </div>
+          <PluginLinks session={props.view()} active>
+            <div class="relative isolate min-h-0 flex-1 overflow-hidden">
+              <MessageTimeline
+                active
+                hideHeader
+                session={source}
+                view={props.view()}
+                screen={props.screen}
+                background={{ blocking: () => [], tasks: () => [], move: () => Promise.resolve() }}
+                actions={props.actions({ sessionID: () => id, isChild: () => true })}
+                centered={false}
+                reserveReviewToggle={false}
+                bottomInset={0}
+                anchor={(messageID) => `subagent-message-${messageID}`}
+                measurementKey={`${server.key}/${id}/subagent-pane`}
+                scroll={follow.scroll}
+                pinned={follow.pinned()}
+                onResumeScroll={follow.resume}
+                setScrollRef={follow.setScrollRef}
+                onScheduleScrollState={follow.scheduleScrollState}
+                onPin={follow.pin}
+                onUnpin={follow.unpin}
+                onUserScroll={follow.markUserScroll}
+                onHistoryScroll={follow.onHistoryScroll}
+                onSelectionInteraction={follow.selectionInteraction}
+                onContentResize={follow.contentResized}
+                setScrollToEnd={follow.setScrollToEnd}
+              />
+            </div>
+          </PluginLinks>
         </DataContext.Provider>
       </Show>
       <Show when={info()}>
@@ -273,15 +302,22 @@ function SubagentTranscript(props: {
   )
 }
 
-// Follows the transcript's end while the reader stays there and loads older history when they scroll to the top: a
-// reduced copy of the routed timeline's interaction, which also tracks hashes, reveals and the composer.
-function createSubagentTimelineFollow(loadOlder: () => void) {
+// Follows the transcript's end while the reader stays there, and loads older history when they scroll to the top or the
+// loaded page does not fill the pane: a reduced copy of the routed timeline's interaction, which also tracks hashes,
+// reveals and the composer.
+function createSubagentTimelineFollow(input: {
+  ready: Accessor<boolean>
+  more: Accessor<boolean>
+  loading: Accessor<boolean>
+  loadOlder: () => void
+}) {
   const [follow, setFollow] = createStore({ pinned: true, scroll: { overflow: false, jump: false } })
   let scroller: HTMLDivElement | undefined
 
   let scrollToEnd = (_behavior?: ScrollBehavior) => {}
   let measureFrame: (() => void) | undefined
   let measureTarget: HTMLDivElement | undefined
+  let fillFrame: (() => void) | undefined
 
   const unpin = () => {
     if (!scroller || scroller.scrollHeight - scroller.clientHeight <= 1) return
@@ -315,7 +351,42 @@ function createSubagentTimelineFollow(loadOlder: () => void) {
     )
   }
 
-  onCleanup(() => measureFrame?.())
+  // A page that does not overflow cannot be scrolled up, so it loads the next older page itself.
+  const fill = () => {
+    if (fillFrame !== undefined) return
+    let short = false
+    fillFrame = frameLoop.addMeasured(
+      () => {
+        short =
+          input.ready() &&
+          follow.pinned &&
+          !input.loading() &&
+          !!scroller &&
+          scroller.scrollHeight <= scroller.clientHeight + 1
+      },
+      () => {
+        fillFrame = undefined
+
+        if (short && input.more()) input.loadOlder()
+
+        return false
+      },
+    )
+  }
+
+  createEffect(
+    on(
+      () => [input.ready(), input.more(), input.loading(), follow.pinned] as const,
+      ([ready, more, loading, pinned]) => {
+        if (ready && more && !loading && pinned) fill()
+      },
+    ),
+  )
+
+  onCleanup(() => {
+    measureFrame?.()
+    fillFrame?.()
+  })
 
   return {
     scroll: follow.scroll,
@@ -329,14 +400,18 @@ function createSubagentTimelineFollow(loadOlder: () => void) {
     setScrollRef: (element: HTMLDivElement | undefined) => {
       scroller = element
 
-      if (element) scheduleScrollState(element)
+      if (!element) return
+      scheduleScrollState(element)
+      fill()
     },
     setScrollToEnd: (scroll: (behavior?: ScrollBehavior) => void) => {
       scrollToEnd = scroll
     },
     scheduleScrollState,
     contentResized: () => {
-      if (scroller) scheduleScrollState(scroller)
+      if (!scroller) return
+      scheduleScrollState(scroller)
+      fill()
     },
     markUserScroll: () => {},
     selectionInteraction: () => {
@@ -344,7 +419,7 @@ function createSubagentTimelineFollow(loadOlder: () => void) {
     },
     onHistoryScroll: () => {
       if (follow.pinned || !scroller || scroller.scrollTop >= 200) return
-      loadOlder()
+      input.loadOlder()
     },
   }
 }

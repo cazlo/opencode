@@ -3,9 +3,9 @@ import type { SessionMessageInfo } from "@opencode/client/promise"
 import { useServer } from "@/runtime/server/current"
 import type { SessionModel } from "../model"
 
-const leadingTurnPageDelay = 200
+export const leadingTurnPageDelay = 200
 
-const leadingTurnPageLimit = 3
+export const leadingTurnPageLimit = 3
 
 // The store preserves the transcript array across prepends and tab switches, and replaces it on eviction.
 // Remember the original turn so interrupted enrichment can resume without chasing newly prepended turns.

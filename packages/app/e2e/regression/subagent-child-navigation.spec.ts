@@ -100,16 +100,61 @@ test("opens a subagent card in a pane beside the transcript", async ({ page }) =
 
   await pane.getByRole("button", { name: "Back", exact: true }).click()
   // The running subagent comes before the finished one.
-  await expect(pane.locator('[data-slot="subagent-pane-row"]')).toHaveText([
-    new RegExp(runningChildTitle),
-    new RegExp(childTitle),
-  ])
+  const rows = pane.getByRole("listitem")
+  await expect(rows).toHaveText([new RegExp(runningChildTitle), new RegExp(childTitle)])
+  // Back leaves focus on the row of the subagent just left.
+  await expect(pane.getByRole("button", { name: new RegExp(childTitle) })).toBeFocused()
 
-  await pane.locator(`[data-slot="subagent-pane-row"][data-session-id="${childID}"]`).click()
+  await rows.filter({ hasText: childTitle }).getByRole("button").click()
   await expect(pane.getByText("Child transcript text")).toBeVisible()
   await pane.getByRole("button", { name: "Open full session" }).click()
   await expectPath(page, sessionHref(childID))
   await expectSessionTitle(page, taskDescription)
+  // The pane would only list the subagent's own, so it closes with the way in.
+  await expect(pane).toHaveCount(0)
+})
+
+test("lists a finished subagent's own subagents before it is opened", async ({ page }) => {
+  await mockWorkspace(page, {
+    name: "SubagentNavigation",
+    sessions: [
+      { id: parentID, title: parentTitle, created: 1700000000000 },
+      { id: childID, title: childTitle, created: 1700000001000, parentID },
+      { id: grandchildID, title: grandchildTitle, created: 1700000002000, parentID: childID },
+    ],
+    pageMessages: (id) => ({ items: id === parentID ? parentMessages() : [] }),
+    seed: { tabs: [parentID] },
+  })
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  await page.getByRole("button", { name: "Toggle subagents" }).click()
+  await expect(page.getByRole("complementary", { name: "Subagents" }).getByRole("listitem")).toHaveText([
+    new RegExp(childTitle),
+    new RegExp(grandchildTitle),
+  ])
+})
+
+test("opens a subagent card that is not this session's own on its route", async ({ page }) => {
+  // A fork copies its original's cards, whose subagents belong to the original.
+  const originalID = "ses_subagent_original"
+  const copiedID = "ses_subagent_copied"
+  await mockWorkspace(page, {
+    name: "SubagentNavigation",
+    sessions: [
+      { id: parentID, title: parentTitle, created: 1700000000000 },
+      { id: originalID, title: "Original session", created: 1700000001000 },
+      { id: copiedID, title: "Copied subagent session", created: 1700000002000, parentID: originalID },
+    ],
+    pageMessages: (id) => ({ items: id === parentID ? parentMessages(copiedID) : [] }),
+    seed: { tabs: [parentID] },
+  })
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  await page.locator(`a[href="${sessionHref(copiedID)}"]`).click()
+  await expectPath(page, sessionHref(copiedID))
+  await expect(page.getByRole("complementary", { name: "Subagents" })).toHaveCount(0)
 })
 
 test("toggles the subagent pane from the header and the keyboard", async ({ page }) => {
@@ -124,11 +169,12 @@ test("toggles the subagent pane from the header and the keyboard", async ({ page
   await toggle.click()
   await expect(pane).toBeVisible()
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
-  await expect(pane.locator('[data-slot="subagent-pane-row"]')).toHaveCount(2)
+  await expect(pane.getByRole("listitem")).toHaveCount(2)
 
   await pane.getByRole("button", { name: "Close subagents" }).click()
   await expect(pane).toHaveCount(0)
   await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await expect(toggle).toBeFocused()
 
   // The test browser reports Windows, so the app's modifier is Control on every host.
   await page.keyboard.press("Control+Shift+E")
@@ -281,7 +327,10 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await requested.promise
   await openFullSession(page)
   await expect(page).toHaveURL(sessionHref(childID))
+  // The pane started the held load, and the route joins it instead of making its own, so the route's header and its
+  // missing timeline are what show that the load is pending.
   await Promise.all([
+    expect(page.locator("[data-timeline-virtual-content]")).toHaveCount(0),
     expect(page.locator('[data-slot="session-title-parent"]')).toHaveText(parentTitle),
     expect(page.locator('[data-slot="session-title-child"]')).toHaveText(childTitle),
   ]).finally(() => release.resolve())
@@ -322,11 +371,14 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   await page.goBack()
   await Promise.all([expect(page).toHaveURL(sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
 
+  // Holds only what the route asks for after "Open full session"; the pane's own loads pass.
+  let holding = false
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
   await page.route(
     (url) => url.pathname === `/api/session/${childID}` && url.port === serverPort,
     async (route) => {
+      if (!holding) return route.fallback()
       requested.resolve()
       await release.promise
       await route.fallback()
@@ -338,6 +390,9 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   })
 
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+  const pane = page.getByRole("complementary", { name: "Subagents" })
+  await expect(pane.getByText("Child transcript text")).toBeVisible()
+  holding = true
   await openFullSession(page)
   await Promise.all([requested.promise, expect(page).toHaveURL(sessionHref(childID))])
   await Promise.all([
@@ -430,7 +485,9 @@ async function setup(page: Page, events?: () => OpenCodeEvent[], nestedDepth: 0 
         ? [{ id: greatGrandchildID, title: greatGrandchildTitle, created: 1700000003000, parentID: grandchildID }]
         : []),
     ],
-    pageMessages: (sessionID) => ({ items: sessionID === parentID ? parentMessages() : [] }),
+    pageMessages: (sessionID) => ({
+      items: sessionID === parentID ? parentMessages() : sessionID === childID ? childMessages() : [],
+    }),
     events,
     eventRetry: events ? 16 : undefined,
     seed: { tabs: [parentID] },
@@ -523,7 +580,7 @@ function childMessages(): SessionMessageInfo[] {
   ]
 }
 
-function parentMessages(): SessionMessageInfo[] {
+function parentMessages(subagentID = childID): SessionMessageInfo[] {
   const userID = "msg_user_0001"
   const assistantID = "msg_assistant_0001"
 
@@ -553,7 +610,7 @@ function parentMessages(): SessionMessageInfo[] {
             status: "completed",
             input: { description: taskDescription, agent: "explore", prompt: "Inspect the delegated work." },
             content: [{ type: "text", text: "Subagent finished" }],
-            metadata: { sessionID: childID },
+            metadata: { sessionID: subagentID },
           },
         },
       ],

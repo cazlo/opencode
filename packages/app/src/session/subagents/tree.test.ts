@@ -61,12 +61,13 @@ test.each<Case>([
     completed: ["live:0"],
   },
   {
-    name: "ends at a parent cycle",
+    // The routed session is its own descendant: its parent is one of its subagents' subagents.
+    name: "ends at a parent cycle through the routed session",
     rootID: "root",
-    sessions: [info("a", "root", 1), info("b", "a", 2), info("a-again", "b", 3), info("loop", "loop", 4)],
-    status: { a: "succeeded", b: "succeeded", "a-again": "succeeded" },
+    sessions: [info("a", "root", 1), info("b", "a", 2), info("root", "b", 0)],
+    status: { a: "succeeded", b: "succeeded", root: "succeeded" },
     running: [],
-    completed: ["a:0", "b:1", "a-again:2"],
+    completed: ["a:0", "b:1"],
   },
   {
     name: "leaves out the siblings and parent of a routed subagent",

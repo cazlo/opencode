@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onCleanup, Show, type ParentProps } from "solid-js"
+import { createEffect, createSignal, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Keybind } from "@opencode/ui/keybind"
@@ -56,6 +56,10 @@ export function SubagentPaneFrame(
   }>,
 ) {
   const language = useLanguage()
+  let back: HTMLButtonElement | undefined
+
+  // Opening a subagent moves focus into its view, from the row or card that was activated.
+  onMount(() => back?.focus())
 
   return (
     <>
@@ -64,6 +68,7 @@ export function SubagentPaneFrame(
           {(onBack) => (
             <Tooltip placement="bottom" value={language.t("session.subagents.back")}>
               <IconButton
+                ref={back}
                 type="button"
                 variant="ghost-muted"
                 size="large"
@@ -114,9 +119,16 @@ export function SubagentPaneFrame(
 export function SubagentList(props: {
   groups: { running: readonly SubagentRow[]; completed: readonly SubagentRow[] }
   onSelect: (id: string) => void
+  /** The subagent whose view was just left; its row takes focus. */
+  focus?: string
 }) {
   const language = useLanguage()
   const [now, setNow] = createSignal(Date.now())
+  const rows = new Map<string, HTMLButtonElement>()
+
+  onMount(() => {
+    if (props.focus) rows.get(props.focus)?.focus()
+  })
 
   // One clock for every row, ticking only while something runs.
   createEffect(() => {
@@ -129,8 +141,8 @@ export function SubagentList(props: {
 
   const sections = () =>
     [
-      { key: "running", title: language.t("session.subagents.running"), rows: props.groups.running },
-      { key: "completed", title: language.t("session.subagents.completed"), rows: props.groups.completed },
+      { title: language.t("session.subagents.running"), rows: props.groups.running },
+      { title: language.t("session.subagents.completed"), rows: props.groups.completed },
     ] as const
 
   return (
@@ -147,7 +159,7 @@ export function SubagentList(props: {
         <For each={sections()}>
           {(section) => (
             <Show when={section.rows.length > 0}>
-              <section data-slot="subagent-pane-section" data-section={section.key}>
+              <section>
                 <h3 class="px-2 pb-1 pt-3 text-[12px] font-medium leading-4 text-v2-text-text-faint">
                   {section.title}
                 </h3>
@@ -156,9 +168,11 @@ export function SubagentList(props: {
                     {(row) => (
                       <li>
                         <button
+                          ref={(element) => {
+                            rows.set(row.id, element)
+                            onCleanup(() => rows.delete(row.id))
+                          }}
                           type="button"
-                          data-slot="subagent-pane-row"
-                          data-session-id={row.id}
                           class="flex h-8 w-full min-w-0 items-center gap-2 rounded-[6px] pe-2 text-start text-[13px] font-[440] leading-[var(--line-height-compact)] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
                           style={{ "padding-inline-start": `${8 + Math.min(row.depth, 4) * 16}px` }}
                           onClick={() => props.onSelect(row.id)}
