@@ -1,7 +1,8 @@
+import { STORY_TIME } from "@opencode/session-ui/storybook"
 import { SubagentList, SubagentPaneFrame } from "./pane"
 import type { SubagentRow } from "./tree"
 
-const now = Date.now()
+const now = STORY_TIME
 
 const row = (input: Partial<SubagentRow> & Pick<SubagentRow, "id" | "title" | "started">): SubagentRow => ({
   depth: 0,
@@ -10,7 +11,13 @@ const row = (input: Partial<SubagentRow> & Pick<SubagentRow, "id" | "title" | "s
 })
 
 const running = [
-  row({ id: "ses_scan", title: "Scan the timeline projection", status: "running", started: now - 42_000 }),
+  row({
+    id: "ses_scan",
+    title: "Scan the timeline projection",
+    status: "running",
+    started: now - 42_000,
+    ended: now,
+  }),
   row({
     id: "ses_scan_a",
     title: "Read the virtualizer",
@@ -18,6 +25,7 @@ const running = [
     agent: "general",
     status: "running",
     started: now - 20_000,
+    ended: now,
   }),
 ]
 

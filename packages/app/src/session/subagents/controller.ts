@@ -19,10 +19,18 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
   const view = () => input.session.layout.view().subagents
   const routed = () => input.session.identity.params.id
   // The pane remembers its selection per routed session for the life of the screen; it is not persisted. `focus` names
-  // the subagent a back step left, whose row takes focus in the list.
-  const [state, setState] = createStore<{ selection: Record<string, string | undefined>; focus?: string }>({
+  // the subagent a back step left, whose row takes focus in the list, and `focusBack` moves focus into a newly entered
+  // subagent once without stealing it on later passive mounts.
+  const [state, setState] = createStore<{
+    selection: Record<string, string | undefined>
+    focus?: string
+    focusBack?: string
+  }>({
     selection: {},
   })
+  const speculative: {
+    current?: { root: string; id: string; wasOpened: boolean; previousSelection: string | undefined }
+  } = {}
   // Its open state is stored with the session's tab, so without one there is nothing to open.
   const available = () => input.session.isDesktop() && !!routed() && !!input.session.layout.tabKey()
   const shown = () => available() && view().opened()
@@ -34,7 +42,7 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
 
     return subagentGroups({
       rootID: id,
-      sessions: data.session.family(id).flatMap((member) => data.session.get(member) ?? []),
+      sessions: data.session.family(id).flatMap((member) => (member === id ? [] : (data.session.get(member) ?? []))),
       status: (member) =>
         data.session.status(member) === "running"
           ? "running"
@@ -61,36 +69,65 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
     for (const id of listed()) void data.session.sync(id, { children: true }).catch(() => undefined)
   })
 
-  const descends = (id: string, root: string) => {
-    const seen = new Set<string>()
-    let parentID = data.session.get(id)?.parentID
+  const gone = (id: string) => data.session.missing(id) || Boolean(data.session.get(id)?.time.archived)
 
-    while (parentID && !seen.has(parentID)) {
-      if (parentID === root) return true
+  const lineage = (id: string, root: string): "yes" | "no" | "pending" => {
+    if (id === root) return "no"
+    const info = data.session.get(id)
+
+    if (!info) return data.session.missing(id) ? "no" : "pending"
+    const seen = new Set<string>([id])
+    let parentID = info.parentID
+
+    while (parentID) {
+      if (parentID === root) return "yes"
+      if (seen.has(parentID) || data.session.missing(parentID)) return "no"
       seen.add(parentID)
-      parentID = data.session.get(parentID)?.parentID
+      const parent = data.session.get(parentID)
+      if (!parent) return "pending"
+      parentID = parent.parentID
     }
 
-    return false
+    return "no"
+  }
+
+  const uncachedAncestor = (id: string, root: string) => {
+    if (id === root) return
+    const info = data.session.get(id)
+
+    if (!info) return
+    const seen = new Set<string>([id])
+    let parentID = info.parentID
+
+    while (parentID && parentID !== root && !seen.has(parentID)) {
+      if (data.session.missing(parentID)) return
+      const parent = data.session.get(parentID)
+      if (!parent) return parentID
+      seen.add(parentID)
+      parentID = parent.parentID
+    }
   }
 
   const selected = createMemo(() => {
     const root = routed()
     const id = root ? state.selection[root] : undefined
 
-    if (!root || !id || data.session.missing(id)) return
+    if (!root || !id || gone(id)) return
 
     // A subagent opened from its card can arrive before its info; it shows while that loads.
-    return !data.session.get(id) || descends(id, root) ? id : undefined
+    return lineage(id, root) !== "no" ? id : undefined
   })
 
-  const select = (id: string | undefined, focus?: string) => {
+  const select = (id: string | undefined, focus?: string, keepSpeculative?: boolean) => {
     const root = routed()
 
     if (!root) return
+    if (!keepSpeculative && speculative.current?.root === root) speculative.current = undefined
+    const shouldFocusBack = !!id && (typeof document === "undefined" || !editable(document.activeElement))
     batch(() => {
       setState("selection", root, id)
       setState("focus", focus)
+      setState("focusBack", shouldFocusBack ? id : undefined)
     })
   }
 
@@ -104,16 +141,96 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
     openRoute(root, id)
   }
 
-  // A subagent that turns out, once its info arrives, not to belong to this session, such as one a fork copied, has
-  // no place in the list; it opens on its own route.
+  // Cleans up missing or archived selections, and redirects a speculatively opened subagent that turns out not to
+  // belong to this session, such as one a fork copied, onto its own route while preserving any already-open pane state.
   createEffect(() => {
     const root = routed()
+    if (speculative.current && speculative.current.root !== root) speculative.current = undefined
     const id = root ? state.selection[root] : undefined
 
-    if (root && id && data.session.get(id) && !descends(id, root)) openFull(id)
+    if (!root || !id) return
+    const pending = speculative.current?.root === root && speculative.current.id === id ? speculative.current : undefined
+
+    if (data.session.missing(id)) {
+      if (pending) {
+        speculative.current = undefined
+        batch(() => {
+          setState("selection", root, pending.previousSelection)
+          setState("focusBack", undefined)
+          if (!pending.wasOpened) view().setOpened(false)
+        })
+        return
+      }
+      setState("selection", root, undefined)
+      return
+    }
+
+    if (data.session.get(id)?.time.archived) {
+      if (pending) {
+        const active = shown()
+        speculative.current = undefined
+        batch(() => {
+          setState("selection", root, pending.previousSelection)
+          setState("focusBack", undefined)
+          if (!pending.wasOpened) view().setOpened(false)
+        })
+        if (active) openRoute(root, id)
+        return
+      }
+      setState("selection", root, undefined)
+      return
+    }
+
+    const ancestor = uncachedAncestor(id, root)
+    if (ancestor) {
+      void data.session.sync(ancestor).catch(() => undefined)
+      return
+    }
+
+    const relation = lineage(id, root)
+    if (relation === "yes") {
+      if (pending) speculative.current = undefined
+      return
+    }
+
+    if (relation === "no") {
+      if (pending) {
+        const active = shown()
+        speculative.current = undefined
+        batch(() => {
+          setState("selection", root, pending.previousSelection)
+          setState("focusBack", undefined)
+          if (!pending.wasOpened) view().setOpened(false)
+        })
+        if (active) openRoute(root, id)
+        return
+      }
+      setState("selection", root, undefined)
+    }
   })
 
-  const toggle = () => view().setOpened(!view().opened())
+  const close = () => {
+    const pending = speculative.current?.root === routed() ? speculative.current : undefined
+    if (pending) speculative.current = undefined
+    const restoreFocus =
+      typeof document !== "undefined" &&
+      document.getElementById("subagent-pane")?.contains(document.activeElement) === true
+    batch(() => {
+      if (pending) setState("selection", pending.root, pending.previousSelection)
+      setState("focus", undefined)
+      setState("focusBack", undefined)
+      view().setOpened(false)
+    })
+    if (restoreFocus) document.querySelector<HTMLElement>('button[aria-controls="subagent-pane"]')?.focus()
+  }
+
+  const toggle = () => {
+    if (view().opened()) {
+      close()
+      return
+    }
+    view().setOpened(true)
+  }
 
   command.register("subagents", () => [
     {
@@ -131,24 +248,36 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
     shown,
     groups: () => groups,
     focus: () => state.focus,
+    focusBack: () => state.focusBack,
+    clearFocus: () => setState("focus", undefined),
+    clearFocusBack: () => setState("focusBack", undefined),
     selected,
-    select,
+    select: (id: string | undefined, focus?: string) => select(id, focus),
     toggle,
-    close: () => {
-      view().setOpened(false)
-      document.querySelector<HTMLElement>('button[aria-controls="subagent-pane"]')?.focus()
-    },
+    close,
     openFull,
     // On desktop subagents opened from the transcript or the activity capsule open here rather than replacing the
     // transcript. One that is not this session's own, or no pane to open, is left to the caller's route.
     openInPane: (id: string) => {
       const root = routed()
 
-      if (!root || !available()) return false
+      if (!root || !available() || gone(id)) return false
+      const relation = lineage(id, root)
+      if (relation === "no") return false
 
-      if (data.session.get(id) && !descends(id, root)) return false
+      if (relation !== "pending" && speculative.current?.root === root) speculative.current = undefined
+      if (relation === "pending") {
+        const existing = speculative.current?.root === root ? speculative.current : undefined
+        speculative.current = {
+          root,
+          id,
+          wasOpened: existing ? existing.wasOpened : view().opened(),
+          previousSelection: existing ? existing.previousSelection : state.selection[root],
+        }
+      }
+
       view().setOpened(true)
-      select(id)
+      select(id, undefined, relation === "pending")
 
       return true
     },
@@ -166,3 +295,7 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
 }
 
 export type SubagentPaneModel = ReturnType<typeof createSubagentPane>
+
+function editable(node: Element | null) {
+  return node instanceof HTMLElement && (node.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName))
+}

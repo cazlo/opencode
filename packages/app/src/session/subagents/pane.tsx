@@ -51,6 +51,8 @@ export function SubagentPaneFrame(
     onBack?: () => void
     onOpenFull?: () => void
     onClose: () => void
+    autoFocusBack?: boolean
+    onAutoFocus?: () => void
     /** The floating review toggle sits over this header's end. */
     reserveReviewToggle?: boolean
   }>,
@@ -59,7 +61,11 @@ export function SubagentPaneFrame(
   let back: HTMLButtonElement | undefined
 
   // Opening a subagent moves focus into its view, from the row or card that was activated.
-  onMount(() => back?.focus())
+  onMount(() => {
+    if (!props.autoFocusBack) return
+    props.onAutoFocus?.()
+    if (!editable(document.activeElement)) back?.focus()
+  })
 
   return (
     <>
@@ -80,7 +86,7 @@ export function SubagentPaneFrame(
             </Tooltip>
           )}
         </Show>
-        <h2 class="min-w-0 flex-1 truncate px-1 text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base">
+        <h2 class="min-w-0 flex-1 truncate px-1 text-[13px] font-[530] leading-[var(--line-height-compact)] tracking-[-0.04px] text-v2-text-text-base">
           <bdi dir="auto">{props.title}</bdi>
         </h2>
         <Show when={props.onOpenFull}>
@@ -121,18 +127,22 @@ export function SubagentList(props: {
   onSelect: (id: string) => void
   /** The subagent whose view was just left; its row takes focus. */
   focus?: string
+  onAutoFocus?: () => void
 }) {
   const language = useLanguage()
   const [now, setNow] = createSignal(Date.now())
   const rows = new Map<string, HTMLButtonElement>()
 
   onMount(() => {
-    if (props.focus) rows.get(props.focus)?.focus()
+    if (!props.focus) return
+    const id = props.focus
+    props.onAutoFocus?.()
+    if (!editable(document.activeElement)) rows.get(id)?.focus()
   })
 
   // One clock for every row, ticking only while something runs.
   createEffect(() => {
-    if (props.groups.running.length === 0) return
+    if (!props.groups.running.some((row) => row.ended === undefined)) return
 
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
@@ -206,4 +216,8 @@ export function SubagentList(props: {
       </div>
     </Show>
   )
+}
+
+function editable(node: Element | null) {
+  return node instanceof HTMLElement && (node.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName))
 }

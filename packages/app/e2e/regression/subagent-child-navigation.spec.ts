@@ -11,7 +11,9 @@ const directory = "C:/OpenCode/SubagentNavigation"
 
 const projectID = "proj_subagentnavigation"
 
-const serverPort = new URL(SERVER).port
+const serverOrigin = SERVER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+const apiRoute = (path: string) => new RegExp(`^${serverOrigin}${path}(\\?|$)`)
 
 const parentID = "ses_subagent_parent"
 
@@ -105,6 +107,16 @@ test("opens a subagent card in a pane beside the transcript", async ({ page }) =
   // Back leaves focus on the row of the subagent just left.
   await expect(pane.getByRole("button", { name: new RegExp(childTitle) })).toBeFocused()
 
+  await rows.filter({ hasText: runningChildTitle }).getByRole("button").click()
+  const interrupt = pane.getByRole("button", { name: "Interrupt subagent" })
+  await expect(interrupt).toBeVisible()
+  const interrupted = page.waitForRequest(
+    (req) => req.method() === "POST" && apiRoute(`/api/session/${runningChildID}/interrupt`).test(req.url()),
+  )
+  await interrupt.click()
+  await interrupted
+  await pane.getByRole("button", { name: "Back", exact: true }).click()
+
   await rows.filter({ hasText: childTitle }).getByRole("button").click()
   await expect(pane.getByText("Child transcript text")).toBeVisible()
   await pane.getByRole("button", { name: "Open full session" }).click()
@@ -136,25 +148,59 @@ test("lists a finished subagent's own subagents before it is opened", async ({ p
 })
 
 test("opens a subagent card that is not this session's own on its route", async ({ page }) => {
-  // A fork copies its original's cards, whose subagents belong to the original.
+  // A fork copies its original's cards, whose subagents belong to the original and resolve by ID on click.
   const originalID = "ses_subagent_original"
-  const copiedID = "ses_subagent_copied"
+  const copiedClosedID = "ses_subagent_copied_closed"
+  const copiedOpenID = "ses_subagent_copied_open"
+  const copiedClosedTitle = "Copied subagent session"
+  const copiedOpenTitle = "Second copied subagent session"
   await mockWorkspace(page, {
     name: "SubagentNavigation",
     sessions: [
       { id: parentID, title: parentTitle, created: 1700000000000 },
+      { id: childID, title: childTitle, created: 1700000000500, parentID },
       { id: originalID, title: "Original session", created: 1700000001000 },
-      { id: copiedID, title: "Copied subagent session", created: 1700000002000, parentID: originalID },
+      { id: copiedClosedID, title: copiedClosedTitle, created: 1700000002000, parentID: originalID },
+      { id: copiedOpenID, title: copiedOpenTitle, created: 1700000003000, parentID: originalID },
     ],
-    pageMessages: (id) => ({ items: id === parentID ? parentMessages(copiedID) : [] }),
+    pageMessages: (id) => ({
+      items:
+        id === parentID
+          ? parentMessages(copiedClosedID, copiedOpenID)
+          : id === childID
+            ? childMessages()
+            : [],
+    }),
     seed: { tabs: [parentID] },
   })
+  const pane = page.getByRole("complementary", { name: "Subagents" })
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
-  await page.locator(`a[href="${sessionHref(copiedID)}"]`).click()
-  await expectPath(page, sessionHref(copiedID))
-  await expect(page.getByRole("complementary", { name: "Subagents" })).toHaveCount(0)
+  const resolvedClosed = page.waitForRequest(apiRoute(`/api/session/${copiedClosedID}`))
+  await page.locator(`a[href="${sessionHref(copiedClosedID)}"]`).click()
+  await resolvedClosed
+  await expectPath(page, sessionHref(copiedClosedID))
+  await expectSessionTitle(page, copiedClosedTitle)
+  await expect(pane).toHaveCount(0)
+
+  // Returning to the parent and opening its own subagent pane keeps that pane open across a copied card's navigation.
+  await page.goBack()
+  await Promise.all([expectPath(page, sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
+  await page.getByRole("button", { name: "Toggle subagents" }).click()
+  await pane.getByRole("listitem").filter({ hasText: childTitle }).getByRole("button").click()
+  await expect(pane.getByText("Child transcript text")).toBeVisible()
+
+  const resolvedOpen = page.waitForRequest(apiRoute(`/api/session/${copiedOpenID}`))
+  await page.locator(`a[href="${sessionHref(copiedOpenID)}"]`).click()
+  await resolvedOpen
+  await expectPath(page, sessionHref(copiedOpenID))
+  await expectSessionTitle(page, copiedOpenTitle)
+  await expect(pane).toBeVisible()
+
+  await page.goBack()
+  await Promise.all([expectPath(page, sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
+  await expect(pane.getByText("Child transcript text")).toBeVisible()
 })
 
 test("toggles the subagent pane from the header and the keyboard", async ({ page }) => {
@@ -312,14 +358,11 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await setup(page)
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  await page.route(
-    (url) => url.pathname === `/api/session/${childID}/message` && url.port === serverPort,
-    async (route) => {
-      requested.resolve()
-      await release.promise
-      await route.fallback()
-    },
-  )
+  await page.route(apiRoute(`/api/session/${childID}/message`), async (route) => {
+    requested.resolve()
+    await release.promise
+    await route.fallback()
+  })
 
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
@@ -343,14 +386,11 @@ test("keeps the parent visible while the child session resolves", async ({ page 
   await setup(page)
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  await page.route(
-    (url) => url.pathname === `/api/session/${childID}` && url.port === serverPort,
-    async (route) => {
-      requested.resolve()
-      await release.promise
-      await route.fallback()
-    },
-  )
+  await page.route(apiRoute(`/api/session/${childID}`), async (route) => {
+    requested.resolve()
+    await release.promise
+    await route.fallback()
+  })
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
@@ -375,15 +415,12 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   let holding = false
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  await page.route(
-    (url) => url.pathname === `/api/session/${childID}` && url.port === serverPort,
-    async (route) => {
-      if (!holding) return route.fallback()
-      requested.resolve()
-      await release.promise
-      await route.fallback()
-    },
-  )
+  await page.route(apiRoute(`/api/session/${childID}`), async (route) => {
+    if (!holding) return route.fallback()
+    requested.resolve()
+    await release.promise
+    await route.fallback()
+  })
 
   const parentTab = page.locator("[data-titlebar-tab-slot]", {
     has: page.locator('[data-slot="tab-title"]', { hasText: parentTitle }),
@@ -494,28 +531,26 @@ async function setup(page: Page, events?: () => OpenCodeEvent[], nestedDepth: 0 
   })
   // The child session resolves by ID but is absent from the session list,
   // matching a subagent session that has not been loaded into the list cache yet.
-  await page.route(
-    (url) => url.pathname === "/api/session" && url.port === serverPort,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        headers: { "access-control-allow-origin": "*" },
-        body: JSON.stringify({
-          data: [
-            currentSession({
-              id: parentID,
-              slug: parentID,
-              projectID,
-              directory,
-              title: parentTitle,
-              version: "dev",
-              time: { created: 1700000000000, updated: 1700000000000 },
-            }),
-          ],
-          cursor: {},
-        }),
+  await page.route(apiRoute("/api/session"), (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        data: [
+          currentSession({
+            id: parentID,
+            slug: parentID,
+            projectID,
+            directory,
+            title: parentTitle,
+            version: "dev",
+            time: { created: 1700000000000, updated: 1700000000000 },
+          }),
+        ],
+        cursor: {},
       }),
+    }),
   )
 }
 
@@ -580,9 +615,10 @@ function childMessages(): SessionMessageInfo[] {
   ]
 }
 
-function parentMessages(subagentID = childID): SessionMessageInfo[] {
+function parentMessages(...subagentIDs: string[]): SessionMessageInfo[] {
   const userID = "msg_user_0001"
   const assistantID = "msg_assistant_0001"
+  const ids = subagentIDs.length > 0 ? subagentIDs : [childID]
 
   return [
     {
@@ -600,20 +636,22 @@ function parentMessages(subagentID = childID): SessionMessageInfo[] {
       cost: 0.01,
       tokens: { input: 100, output: 200, reasoning: 0, cache: { read: 0, write: 0 } },
       finish: "stop",
-      content: [
-        {
-          type: "tool",
-          id: "call_subagent_0001",
-          name: "subagent",
-          time: { created: 1700000001000, ran: 1700000001000, completed: 1700000002000 },
-          state: {
-            status: "completed",
-            input: { description: taskDescription, agent: "explore", prompt: "Inspect the delegated work." },
-            content: [{ type: "text", text: "Subagent finished" }],
-            metadata: { sessionID: subagentID },
-          },
+      content: ids.map((subagentID, index) => ({
+        type: "tool" as const,
+        id: `call_subagent_${String(index + 1).padStart(4, "0")}`,
+        name: "subagent",
+        time: {
+          created: 1700000001000 + index,
+          ran: 1700000001000 + index,
+          completed: 1700000002000 + index,
         },
-      ],
+        state: {
+          status: "completed" as const,
+          input: { description: taskDescription, agent: "explore", prompt: "Inspect the delegated work." },
+          content: [{ type: "text" as const, text: "Subagent finished" }],
+          metadata: { sessionID: subagentID },
+        },
+      })),
     },
   ]
 }

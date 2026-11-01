@@ -54,8 +54,8 @@ export function createSessionRequestModel() {
     )
   })
 
-  // Only a running Session can hold a pending form, and events keep loaded forms current. Comparing by value
-  // keeps every session update in a large subagent tree from re-requesting forms.
+  // Only a running Session can hold a pending form or permission, and events keep loaded ones current. Comparing by
+  // value keeps every session update in a large subagent tree from re-requesting them.
   const formSessions = createMemo(
     () =>
       sessionTreeIDs(data.session.list(), params.id).filter(
@@ -67,7 +67,12 @@ export function createSessionRequestModel() {
 
   createEffect(() => {
     if (serverSDK.connection.status() !== "connected") return
-    void Promise.all(formSessions().map((sessionID) => data.session.form.sync(sessionID))).catch(() => undefined)
+    void Promise.all(
+      formSessions().flatMap((sessionID) => [
+        data.session.permission.sync(sessionID),
+        data.session.form.sync(sessionID),
+      ]),
+    ).catch(() => undefined)
   })
 
   const formRequest = createMemo((): FormInfo | undefined => {

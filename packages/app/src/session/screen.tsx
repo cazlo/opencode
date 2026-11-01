@@ -513,6 +513,7 @@ function SessionScreenContent(props: {
                     screen={props.screen}
                     actions={composer.actions.timeline}
                     reserveReviewToggle={!sideVisible()}
+                    bottomOffset={!subagents.layout().docked && composer.requests.blocked() ? timeline.inset() : 0}
                   />
                 </Show>
               </div>

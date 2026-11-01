@@ -1,7 +1,9 @@
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"
+import { IconButton } from "@opencode/ui/icon-button"
 import { Keybind } from "@opencode/ui/keybind"
 import { Slash } from "@opencode/ui/slash"
+import { Tooltip } from "@opencode/ui/tooltip"
 import { SessionProgressIndicatorV2 } from "@opencode/session-ui/v2/session-progress-indicator-v2"
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { useLanguage } from "@/runtime/i18n/language"
@@ -18,6 +20,8 @@ export function SubagentBar(props: {
   status?: SubagentStatus
   started: number
   ended?: number
+  stopping?: boolean
+  onStop?: () => void
   /** Without it the bar has no way back, as in the subagent pane. */
   onBack?: () => void
 }) {
@@ -43,7 +47,7 @@ export function SubagentBar(props: {
     // The timeline scrolls on underneath, so the line keeps its surface and fades the text passing into it.
     <div
       data-component="subagent-bar"
-      class="relative flex h-8 w-full min-w-0 items-center gap-2 bg-v2-background-bg-base ps-3 pe-1.5 text-[12px] font-[440] leading-4 tracking-[-0.04px] whitespace-nowrap tabular-nums text-v2-text-text-faint before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-4 before:bg-[linear-gradient(to_top,var(--v2-background-bg-base),transparent)]"
+      class="relative flex h-8 w-full min-w-0 items-center gap-2 bg-v2-background-bg-base ps-3 pe-1.5 text-[12px] font-[440] leading-[var(--line-height-compact)] tracking-[-0.04px] whitespace-nowrap tabular-nums text-v2-text-text-faint before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-4 before:bg-[linear-gradient(to_top,var(--v2-background-bg-base),transparent)]"
     >
       <Show when={props.status}>{(status) => <SubagentStatusIcon status={status()} />}</Show>
       <div class="flex min-w-0 flex-1 items-center gap-1.5">
@@ -89,6 +93,22 @@ export function SubagentBar(props: {
           )}
         </For>
       </div>
+      <Show when={props.status === "running" ? props.onStop : undefined}>
+        {(onStop) => (
+          <Tooltip placement="top" value={language.t("session.running.stop.subagent")}>
+            <IconButton
+              type="button"
+              variant="ghost-muted"
+              size="small"
+              class="shrink-0"
+              disabled={props.stopping}
+              icon={<Icon name="stop" size="small" />}
+              aria-label={language.t("session.running.stop.subagent")}
+              onClick={onStop()}
+            />
+          </Tooltip>
+        )}
+      </Show>
       <Show when={props.onBack}>
         {(onBack) => (
           <Button type="button" variant="ghost-faint" size="small" class="shrink-0 gap-1.5 px-1.5" onClick={onBack()}>
