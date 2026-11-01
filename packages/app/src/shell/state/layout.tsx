@@ -15,6 +15,7 @@ import type { ClosedSideTab } from "@/runtime/plugin/closed-tabs"
 import { SessionStateKey } from "@/runtime/server/scope"
 import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./helpers"
 import { requireServerKey } from "@/shell/routes/session"
+import { SUBAGENT_PANE_WIDTH_DEFAULT } from "@/session/session-panel-width"
 import {
   closeSessionTab,
   moveSessionTab,
@@ -67,6 +68,10 @@ export type TabRegions = {
   setBottomHeight(height: number): void
   splitRatio: Accessor<number | undefined>
   setSplitRatio(ratio: number): void
+  subagentsOpened: Accessor<boolean>
+  setSubagentsOpened(opened: boolean): void
+  subagentsWidth: Accessor<number | undefined>
+  setSubagentsWidth(width: number): void
 }
 
 export type LayoutRoute =
@@ -607,6 +612,13 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           split: {
             ratio: createMemo(() => regions.splitRatio() ?? 0.5),
             resize: regions.setSplitRatio,
+          },
+          /** The subagent pane beside the transcript, listing the session's subagents. */
+          subagents: {
+            opened: regions.subagentsOpened,
+            setOpened: regions.setSubagentsOpened,
+            width: createMemo(() => regions.subagentsWidth() ?? SUBAGENT_PANE_WIDTH_DEFAULT),
+            resize: regions.setSubagentsWidth,
           },
           session: {
             width: createMemo(() => regions.sessionWidth() ?? DEFAULT_SESSION_WIDTH),

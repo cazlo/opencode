@@ -114,6 +114,11 @@ describe("tab migration", () => {
     expect(regions).toEqual({ tab: { side: true, sessionWidth: 300 } })
     expect(Schema.encodeSync(TabStorage.Regions)(regions)).toEqual({ tab: { review: true, sessionWidth: 300 } })
     expect(() => Schema.decodeUnknownSync(TabStorage.Regions)({ tab: { review: "yes" } })).toThrow()
+
+    const subagents = Schema.decodeUnknownSync(TabStorage.Regions)({ tab: { subagents: true, subagentsWidth: 420 } })
+
+    expect(subagents).toEqual({ tab: { subagents: true, subagentsWidth: 420 } })
+    expect(Schema.encodeSync(TabStorage.Regions)(subagents)).toEqual({ tab: { subagents: true, subagentsWidth: 420 } })
   })
 })
 

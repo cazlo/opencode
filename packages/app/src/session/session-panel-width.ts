@@ -10,6 +10,10 @@ export const SESSION_PANEL_WIDTH_MIN = 400
 
 export const SIDE_PANE_WIDTH_MIN = 320
 
+export const SUBAGENT_PANE_WIDTH_MIN = 320
+
+export const SUBAGENT_PANE_WIDTH_DEFAULT = 420
+
 const SESSION_PANEL_WIDTH_FIT = 450
 
 const REVIEW_PANE_WIDTH_FIT = 480
@@ -51,4 +55,21 @@ export function clampSessionPanelWidth(input: {
   if (input.available === undefined) return width
 
   return Math.min(width, sessionPanelWidthMax({ ...input, available: input.available }))
+}
+
+// The subagent pane docks beside the transcript while both keep their minimums; otherwise it floats over the
+// transcript's end, which stays visible beside it. `chat` is undefined until the chat column is first measured.
+export function subagentPaneLayout(input: { chat: number | undefined; width: number }) {
+  const width = Math.max(SUBAGENT_PANE_WIDTH_MIN, input.width)
+
+  // As clampSessionPanelWidth: the stored width stands until measured, to avoid a first-frame snap.
+  if (input.chat === undefined) return { docked: true, width, max: width }
+
+  const room = input.chat - SESSION_PANEL_WIDTH_MIN - 8
+
+  if (room >= SUBAGENT_PANE_WIDTH_MIN) return { docked: true, width: Math.min(width, room), max: room }
+
+  const max = Math.max(SUBAGENT_PANE_WIDTH_MIN, input.chat - 48)
+
+  return { docked: false, width: Math.min(width, max), max }
 }

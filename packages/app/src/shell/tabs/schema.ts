@@ -57,6 +57,8 @@ export const Regions = Schema.Record(
       bottom: Schema.optional(Schema.Boolean),
       bottomHeight: Schema.optional(Schema.Finite),
       splitRatio: Schema.optional(Schema.Finite),
+      subagents: Schema.optional(Schema.Boolean),
+      subagentsWidth: Schema.optional(Schema.Finite),
     }).pipe(Schema.encodeKeys({ side: "review" })),
   ),
 )

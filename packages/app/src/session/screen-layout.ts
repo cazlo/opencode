@@ -92,6 +92,10 @@ export function createSessionScreenLayout(
     })
   })
 
+  // The chat column's laid-out width: its dragged width beside the side region, else the whole row; undefined until
+  // measured.
+  const chatWidth = createMemo(() => (tabsOpen() ? resizedWidth() : rowSize.width))
+
   const panelMax = createMemo(() => {
     const width = available()
 
@@ -118,6 +122,7 @@ export function createSessionScreenLayout(
   return {
     centered: createMemo(() => session.isDesktop()),
     panel: {
+      chatWidth,
       max: panelMax,
       ref: (element: HTMLDivElement) => {
         row = element
