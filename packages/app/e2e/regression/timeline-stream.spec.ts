@@ -637,7 +637,12 @@ test("shows a background subagent's outcome as its own row where it finished", a
   await expect(notice).toHaveAttribute("data-outcome", "completed")
 
   await expect(notice.locator('[data-slot="icon-svg"]')).toHaveCount(0)
+  // The pane beside the transcript takes the click; its button opens the subagent's own session.
   await notice.click()
+  await page
+    .getByRole("complementary", { name: "Subagents" })
+    .getByRole("button", { name: "Open full session" })
+    .click()
   await expect(page).toHaveURL(new RegExp(`/session/${childID}$`))
 })
 
@@ -1512,6 +1517,11 @@ test.describe("background shortcut", () => {
 
     await page.getByRole("button", { name: "1 subagent", exact: true }).click()
     await page.getByRole("menuitem", { name: /Only running task/ }).click()
+    // The pane beside the transcript takes the menu's pick; its button opens the subagent's own session.
+    await page
+      .getByRole("complementary", { name: "Subagents" })
+      .getByRole("button", { name: "Open full session" })
+      .click()
     await expect(page).toHaveURL(new RegExp(`/session/${childID}$`))
     await expect(header.getByRole("heading")).toHaveText("Only running task")
 

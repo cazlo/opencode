@@ -49,6 +49,9 @@ import { usePlatform } from "@/runtime/platform/platform"
 import { useServer } from "@/runtime/server/current"
 import { reviewGlyphFill, SessionReviewToggle } from "./header/session-header-actions"
 import { createTimelineCache } from "./timeline/cache"
+import { createSubagentPane } from "./subagents/controller"
+import { SubagentPaneToggle } from "./subagents/pane"
+import { SubagentPane } from "./subagents/transcript"
 import { createPanelMotion, holdLandingWidth, panelOpacity, setPanelResizing } from "@/shell/panel-motion"
 
 export function SessionScreenView(props: { session: SessionModel }) {
@@ -246,6 +249,8 @@ function SessionScreenContent(props: {
     visible: conversationVisible,
   })
 
+  const subagents = createSubagentPane({ session, screen })
+
   props.bindBackground(composer.requests.background.tasks)
   props.bindPrompt({ quotable: composer.quote.available, focus: composer.quote.focus, focused: composer.focused })
   useUsageExceededDialogs({
@@ -316,7 +321,7 @@ function SessionScreenContent(props: {
             onUserScroll={timeline.view.markUserScroll}
             onHistoryScroll={timeline.view.onHistoryScroll}
             centered={screen.centered()}
-            reserveReviewToggle={!sideVisible()}
+            reserveReviewToggle={!sideVisible() && !subagents.shown()}
             onContentResize={timeline.view.contentResized}
             bottomInset={timeline.inset()}
             setVisibleRef={timeline.view.setVisibleRef}
@@ -331,12 +336,18 @@ function SessionScreenContent(props: {
                 <TimelineSearchBar controller={timelineSearch} />
               </Show>
             }
+            headerActions={
+              <Show when={active() && subagents.toggleVisible()}>
+                <SubagentPaneToggle opened={subagents.shown()} onToggle={subagents.toggle} />
+              </Show>
+            }
           />
         </PluginLinks>
       )
     },
     () => conversationVisible() && messagesReady(),
     (sessionID) => server.ctx.data.session.message.list(sessionID),
+    subagents.openInPane,
   )
 
   const mobileTabs = () => (
@@ -449,6 +460,7 @@ function SessionScreenContent(props: {
               model={model}
               suggestionBoundary={timeline.visible}
               onReveal={timeline.actions.revealPart}
+              openSubagent={subagents.openInPane}
             />
           )}
         </Show>
@@ -489,9 +501,21 @@ function SessionScreenContent(props: {
             onKeyDown={revealTimelineScrollbar}
           >
             <Show when={!!session.identity.params.id}>
-              <SessionPanelFrame raised>
-                <ErrorBoundary fallback={sessionErrorFallback}>{sessionPanelContent()}</ErrorBoundary>
-              </SessionPanelFrame>
+              <div data-slot="session-chat-row" class="relative flex min-h-0 flex-1 gap-2">
+                <SessionPanelFrame raised>
+                  <ErrorBoundary fallback={sessionErrorFallback}>{sessionPanelContent()}</ErrorBoundary>
+                </SessionPanelFrame>
+                <Show when={subagents.shown()}>
+                  <SubagentPane
+                    pane={subagents}
+                    session={session}
+                    view={props.view}
+                    screen={props.screen}
+                    actions={composer.actions.timeline}
+                    reserveReviewToggle={!sideVisible()}
+                  />
+                </Show>
+              </div>
             </Show>
             <Show when={windowDragEnabled(platform)}>
               <SessionHeaderDrag pane={chat} gap={headerGap()} />

@@ -355,6 +355,15 @@ export const dict = {
   "session.child.status.succeeded": "Done",
   "session.child.status.failed": "Failed",
   "session.child.status.interrupted": "Interrupted",
+  "command.session.subagents.toggle": "Toggle subagents",
+  "session.subagents.title": "Subagents",
+  "session.subagents.running": "Running",
+  "session.subagents.completed": "Completed",
+  "session.subagents.empty": "No subagents yet",
+  "session.subagents.empty.description": "Subagents this session starts appear here.",
+  "session.subagents.back": "Back",
+  "session.subagents.openFull": "Open full session",
+  "session.subagents.close": "Close subagents",
 
   "prompt.action.attachFile": "Add files",
 

@@ -17,6 +17,8 @@ const parentID = "ses_subagent_parent"
 
 const childID = "ses_subagent_child"
 
+const runningChildID = "ses_subagent_running"
+
 const grandchildID = "ses_subagent_grandchild"
 
 const greatGrandchildID = "ses_subagent_great_grandchild"
@@ -24,6 +26,8 @@ const greatGrandchildID = "ses_subagent_great_grandchild"
 const parentTitle = "Parent session"
 
 const childTitle = "Subagent child session"
+
+const runningChildTitle = "Running subagent session"
 
 const grandchildTitle = "Nested subagent session"
 
@@ -61,9 +65,12 @@ test("keeps the parent title anchored when opening a subagent", async ({ page })
     // Measuring before then can read the detached heading, whose empty bounds put the start at 0.
     const card = page.locator(`a[href="${sessionHref(childID)}"]`)
     await expect(card).toBeVisible()
-    const start = await titleInlineStart(page.locator("[data-session-title]").getByRole("heading", { name: parentTitle }))
+    const start = await titleInlineStart(
+      page.locator("[data-session-title]").getByRole("heading", { name: parentTitle }),
+    )
 
     await card.click()
+    await openFullSession(page)
     await expectSessionTitle(page, taskDescription)
 
     const breadcrumb = page.locator('[data-slot="session-title-parent"]')
@@ -76,6 +83,56 @@ test("keeps the parent title anchored when opening a subagent", async ({ page })
       .poll(() => titleInlineStart(page.locator("[data-session-title]").getByRole("heading", { name: parentTitle })))
       .toBeCloseTo(start, 0)
   }
+})
+
+test("opens a subagent card in a pane beside the transcript", async ({ page }) => {
+  await setupPane(page)
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+
+  // The main transcript stays where it is; the subagent's own transcript shows beside it.
+  await expectPath(page, sessionHref(parentID))
+  await expect(page.getByRole("heading", { name: parentTitle })).toBeVisible()
+  const pane = page.getByRole("complementary", { name: "Subagents" })
+  await expect(pane.getByText("Child transcript text")).toBeVisible()
+
+  await pane.getByRole("button", { name: "Back", exact: true }).click()
+  // The running subagent comes before the finished one.
+  await expect(pane.locator('[data-slot="subagent-pane-row"]')).toHaveText([
+    new RegExp(runningChildTitle),
+    new RegExp(childTitle),
+  ])
+
+  await pane.locator(`[data-slot="subagent-pane-row"][data-session-id="${childID}"]`).click()
+  await expect(pane.getByText("Child transcript text")).toBeVisible()
+  await pane.getByRole("button", { name: "Open full session" }).click()
+  await expectPath(page, sessionHref(childID))
+  await expectSessionTitle(page, taskDescription)
+})
+
+test("toggles the subagent pane from the header and the keyboard", async ({ page }) => {
+  await setupPane(page)
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  const toggle = page.getByRole("button", { name: "Toggle subagents" })
+  const pane = page.getByRole("complementary", { name: "Subagents" })
+  await expect(pane).toHaveCount(0)
+
+  await toggle.click()
+  await expect(pane).toBeVisible()
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(pane.locator('[data-slot="subagent-pane-row"]')).toHaveCount(2)
+
+  await pane.getByRole("button", { name: "Close subagents" }).click()
+  await expect(pane).toHaveCount(0)
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+
+  // The test browser reports Windows, so the app's modifier is Control on every host.
+  await page.keyboard.press("Control+Shift+E")
+  await expect(pane).toBeVisible()
 })
 
 test("navigates from a running subagent card and hides background controls in the child", async ({ page }) => {
@@ -111,6 +168,7 @@ test("navigates from a running subagent card and hides background controls in th
   const hint = page.getByRole("button", { name: /move running work to the background/i })
   await expect(hint).toBeVisible()
   await page.locator('[data-component="task-tool-card"]').click()
+  await openFullSession(page)
   await expect(page).toHaveURL(new RegExp(`/session/${runningChildID}$`))
   await expect(hint).toHaveCount(0)
 })
@@ -220,7 +278,9 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
-  await Promise.all([requested.promise, expect(page).toHaveURL(sessionHref(childID))])
+  await requested.promise
+  await openFullSession(page)
+  await expect(page).toHaveURL(sessionHref(childID))
   await Promise.all([
     expect(page.locator('[data-slot="session-title-parent"]')).toHaveText(parentTitle),
     expect(page.locator('[data-slot="session-title-child"]')).toHaveText(childTitle),
@@ -228,7 +288,9 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await expectSessionTitle(page, taskDescription)
 })
 
+// Desktop opens a subagent card in the pane; a narrow screen has no pane, so the card still opens the session in place.
 test("keeps the parent visible while the child session resolves", async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 900 })
   await setup(page)
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
@@ -249,7 +311,8 @@ test("keeps the parent visible while the child session resolves", async ({ page 
     () => release.resolve(),
   )
 
-  await expectSessionTitle(page, taskDescription)
+  // A narrow screen has no timeline header, so its tab names the session by its own title.
+  await expectSessionTitle(page, childTitle)
 })
 
 test("keeps the parent tab selected while a loaded child session resolves", async ({ page }) => {
@@ -275,6 +338,7 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   })
 
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+  await openFullSession(page)
   await Promise.all([requested.promise, expect(page).toHaveURL(sessionHref(childID))])
   await Promise.all([
     expect(parentTab).toHaveAttribute("data-active", "true"),
@@ -398,6 +462,23 @@ async function setup(page: Page, events?: () => OpenCodeEvent[], nestedDepth: 0 
   )
 }
 
+// A parent with a finished subagent whose transcript has text, and one still running.
+async function setupPane(page: Page) {
+  await mockWorkspace(page, {
+    name: "SubagentNavigation",
+    sessions: [
+      { id: parentID, title: parentTitle, created: 1700000000000 },
+      { id: childID, title: childTitle, created: 1700000001000, parentID },
+      { id: runningChildID, title: runningChildTitle, created: 1700000002000, parentID },
+    ],
+    sessionStatus: { [runningChildID]: { type: "busy" } },
+    pageMessages: (id) => ({
+      items: id === parentID ? parentMessages() : id === childID ? childMessages() : [],
+    }),
+    seed: { tabs: [parentID] },
+  })
+}
+
 function titleInlineStart(title: Locator) {
   return title.evaluate((element) => {
     const range = document.createRange()
@@ -410,6 +491,14 @@ function titleInlineStart(title: Locator) {
   })
 }
 
+// The card opens its subagent in the pane beside the transcript; the pane's button opens the subagent's own session.
+async function openFullSession(page: Page) {
+  await page
+    .getByRole("complementary", { name: "Subagents" })
+    .getByRole("button", { name: "Open full session" })
+    .click()
+}
+
 async function openChildFromParent(page: Page) {
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
@@ -417,8 +506,21 @@ async function openChildFromParent(page: Page) {
   const card = page.locator(`a[href="${sessionHref(childID)}"]`)
   await expect(card).toBeVisible()
   await card.click()
+  await openFullSession(page)
 
   await expect(page).toHaveURL(new RegExp(`/server/.+/session/${childID}$`), { timeout: 15_000 })
+}
+
+function childMessages(): SessionMessageInfo[] {
+  const userID = "msg_child_user"
+
+  return [
+    userMessage(undefined, { id: userID }),
+    assistantMessage([textPart("prt_child_text", "Child transcript text")], {
+      id: "msg_child_assistant",
+      parentID: userID,
+    }),
+  ]
 }
 
 function parentMessages(): SessionMessageInfo[] {

@@ -99,6 +99,10 @@ type MessageTimelineProps = {
   setPage?: (fn: (direction: 1 | -1) => void) => void
   reveal?: { target: () => string | undefined; done: () => void }
   search?: JSX.Element
+  /** Controls placed in the header's actions, after the search. */
+  headerActions?: JSX.Element
+  /** Keys the virtualizer's saved measurements; a pane showing the session at another width keeps its own. */
+  measurementKey?: string
 }
 
 export function MessageTimeline(props: MessageTimelineProps) {
@@ -182,7 +186,7 @@ function MessageTimelineView(
 
   const virtualized = createTimelineVirtualizer({
     active: () => props.active !== false,
-    sessionKey: () => `${server.key}/${props.data.sessionID()}`,
+    sessionKey: () => props.measurementKey ?? `${server.key}/${props.data.sessionID()}`,
     presentationKey: () => JSON.stringify(props.data.timelineDetail()),
     projection,
     showHeader,
@@ -547,6 +551,7 @@ function MessageTimelineView(
                   {(_id) => (
                     <>
                       {props.search}
+                      {props.headerActions}
                       <PluginSlot
                         at="session.header"
                         input={{

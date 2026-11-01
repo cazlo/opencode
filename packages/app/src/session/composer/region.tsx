@@ -44,9 +44,8 @@ import { SessionTodoPill } from "./todo-pill"
 import { sessionTodos, todoFinished } from "./todos"
 import { useOpenSessionRoute } from "../session-identity-header"
 import { resolveSessionComposerSelection } from "./selection"
-import { composerModelLabelKey, composerModelLabels, composerProviderName } from "@/composer/model-label"
-import { useProviders } from "@/providers/catalog/providers"
 import { SubagentBar } from "./subagent-bar"
+import { createSubagentModelLabel } from "../subagents/model-label"
 import { createSessionRequestModel } from "../requests/model"
 import type { Region } from "@/runtime/plugin/panels"
 import { SessionLocationMissing } from "./location-missing"
@@ -421,6 +420,8 @@ export function ActiveSessionComposerRegion(props: {
   model: SessionComposerController
   suggestionBoundary: () => HTMLElement | undefined
   onReveal: (target: string) => void
+  /** Takes a subagent opened from the activity capsule when it can show it beside the transcript. */
+  openSubagent?: (sessionID: string) => boolean
 }) {
   const location = useWorkspaceLocation()
   const data = useData()
@@ -484,7 +485,11 @@ export function ActiveSessionComposerRegion(props: {
 
     if (!current) return
 
-    if (item.sessionID) return openRoute(current, item.sessionID)
+    if (item.sessionID) {
+      if (props.openSubagent?.(item.sessionID)) return
+
+      return openRoute(current, item.sessionID)
+    }
 
     // A starting subagent call has no session yet, so it lives in this timeline.
     props.onReveal(item.target)
@@ -527,35 +532,10 @@ export function ActiveSessionComposerRegion(props: {
       ),
   }
 
-  const providers = useProviders(() => props.session.data.info()?.location.directory)
-
-  const modelLabels = createMemo(() =>
-    composerModelLabels(
-      providers.all(),
-      providers.connected().map((provider) => provider.id),
-    ),
-  )
-
-  const subagentModel = () => {
-    const ref =
-      props.session.data.info()?.model ??
-      props.session.history.messages().findLast((message) => message.type === "assistant")?.model
-
-    if (!ref) return
-    const label = modelLabels().get(composerModelLabelKey(ref.providerID, ref.id))
-
-    return {
-      provider: label
-        ? label.provider
-        : composerProviderName(
-            ref.providerID,
-            providers.all(),
-            providers.connected().map((provider) => provider.id),
-          ),
-      name: label?.model ?? ref.id,
-      variant: ref.variant,
-    }
-  }
+  const subagentModel = createSubagentModelLabel({
+    info: props.session.data.info,
+    messages: props.session.history.messages,
+  })
 
   const subagentStatus = () => {
     if (props.session.data.working()) return "running"
