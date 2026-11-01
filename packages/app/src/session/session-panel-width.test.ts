@@ -20,13 +20,23 @@ test.each([
 
 test.each([
   ["keeps the stored width until the chat column is measured", 500, undefined, { docked: true, width: 500, max: 500 }],
-  ["raises a stored width below the minimum", 200, undefined, { docked: true, width: 320, max: 320 }],
-  ["docks at the stored width while the chat keeps its minimum", 420, 1000, { docked: true, width: 420, max: 592 }],
-  ["clamps the width to the room beside the chat minimum", 700, 1000, { docked: true, width: 592, max: 592 }],
-  ["docks at exactly the pane minimum", 420, 728, { docked: true, width: 320, max: 320 }],
-  ["floats when the chat has no room beside it", 420, 700, { docked: false, width: 420, max: 652 }],
-  ["floats narrower than the chat so its end stays visible", 700, 700, { docked: false, width: 652, max: 652 }],
-  ["never floats below the pane minimum", 420, 300, { docked: false, width: 320, max: 320 }],
+  ["raises a stored width below the minimum", 200, undefined, { docked: true, width: 280, max: 280 }],
+  [
+    "docks at the stored width while the transcript keeps its minimum",
+    420,
+    1000,
+    { docked: true, width: 420, max: 680 },
+  ],
+  ["clamps the width to the room beside the transcript minimum", 700, 800, { docked: true, width: 480, max: 480 }],
+  [
+    "docks at the minimum width of the chat column a session opens with beside review",
+    420,
+    600,
+    { docked: true, width: 280, max: 280 },
+  ],
+  ["floats when the transcript would fall below its minimum", 420, 599, { docked: false, width: 420, max: 551 }],
+  ["floats narrower than the chat so its end stays visible", 700, 599, { docked: false, width: 551, max: 551 }],
+  ["never floats below the pane minimum", 420, 300, { docked: false, width: 280, max: 280 }],
 ])("subagent pane %s", (_name, width, chat, expected) => {
   expect(subagentPaneLayout({ chat, width })).toEqual(expected)
 })
