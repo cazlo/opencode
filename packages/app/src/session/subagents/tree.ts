@@ -1,4 +1,5 @@
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client/promise"
+import { lastAssistantWithUsage } from "@opencode/client/solid"
 import type { SubagentStatus } from "@/session/composer/subagent-bar"
 
 export type SubagentRow = {
@@ -7,6 +8,7 @@ export type SubagentRow = {
   title?: string
   agent?: string
   status?: SubagentStatus
+  contextPercent?: number
   started: number
   ended?: number
 }
@@ -17,6 +19,8 @@ export function subagentGroups(input: {
   rootID: string
   sessions: readonly SessionInfo[]
   status: (id: string) => SubagentStatus | undefined
+  ended?: (info: SessionInfo) => number
+  contextPercent?: (info: SessionInfo) => number | undefined
 }) {
   const children = Map.groupBy(
     input.sessions.filter((info) => info.parentID && !info.time.archived),
@@ -35,8 +39,9 @@ export function subagentGroups(input: {
         title: info.title,
         agent: info.agent,
         status,
+        contextPercent: input.contextPercent?.(info),
         started: info.time.created,
-        ended: status === "running" ? undefined : (info.time.idle ?? info.time.updated),
+        ended: status === "running" ? undefined : (input.ended ? input.ended(info) : (info.time.idle ?? info.time.updated)),
       },
       ...(children.get(info.id) ?? [])
         .toSorted((a, b) => a.time.created - b.time.created)
@@ -58,4 +63,35 @@ export function subagentOutcome(info: SessionInfo | undefined, messages: readonl
   const idle = messages.findLast((message) => message.type === "idle")
 
   return idle?.type === "idle" ? idle.outcome : info?.outcome
+}
+
+export function subagentEnded(info: SessionInfo, messages: readonly SessionMessageInfo[]) {
+  if (info.time.idle !== undefined) return info.time.idle
+  const idle = messages.findLast((message) => message.type === "idle")
+
+  return idle ? idle.time.created : info.time.updated
+}
+
+export function subagentContextPercent(
+  info: SessionInfo | undefined,
+  messages: readonly SessionMessageInfo[],
+  contextLimit: (model: { readonly providerID: string; readonly id: string }) => number | undefined,
+) {
+  const message = lastAssistantWithUsage(messages, info?.revert?.messageID)
+
+  if (!message) return undefined
+
+  const total =
+    message.tokens.input +
+    message.tokens.output +
+    message.tokens.reasoning +
+    message.tokens.cache.read +
+    message.tokens.cache.write
+
+  if (total <= 0) return undefined
+  const limit = contextLimit(message.model)
+
+  if (!limit || limit <= 0) return undefined
+
+  return Math.round((total / limit) * 100)
 }

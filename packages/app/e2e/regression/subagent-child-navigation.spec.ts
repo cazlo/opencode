@@ -1,7 +1,7 @@
 import type { OpenCodeEvent, SessionMessageInfo } from "@opencode/client/promise"
 import { timelinePresets } from "@opencode/session-ui/timeline/detail"
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { expectPath, SERVER, sessionHref } from "../utils/app"
+import { expectPath, provider, SERVER, sessionHref } from "../utils/app"
 import { currentSession } from "../utils/mock-server"
 import { assistantMessage, session, sessionID, setupTimeline, textPart, userMessage } from "../utils/timeline"
 import { expectSessionTitle } from "../utils/waits"
@@ -216,6 +216,9 @@ test("toggles the subagent pane from the header and the keyboard", async ({ page
   await expect(pane).toBeVisible()
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
   await expect(pane.getByRole("listitem")).toHaveCount(2)
+  const childRow = pane.getByRole("listitem").filter({ hasText: childTitle })
+  await expect(childRow).toContainText("25%")
+  await expect(childRow).toContainText("42s")
 
   await pane.getByRole("button", { name: "Close subagents" }).click()
   await expect(pane).toHaveCount(0)
@@ -558,9 +561,16 @@ async function setup(page: Page, events?: () => OpenCodeEvent[], nestedDepth: 0 
 async function setupPane(page: Page) {
   await mockWorkspace(page, {
     name: "SubagentNavigation",
+    provider: provider({ id: "claude-opus-4-6", name: "Claude Opus 4.6", limit: { context: 200_000 } }),
     sessions: [
       { id: parentID, title: parentTitle, created: 1700000000000 },
-      { id: childID, title: childTitle, created: 1700000001000, parentID },
+      {
+        id: childID,
+        title: childTitle,
+        created: 1700000001000,
+        time: { created: 1700000001000, updated: 1700000043000, idle: 1700000043000 },
+        parentID,
+      },
       { id: runningChildID, title: runningChildTitle, created: 1700000002000, parentID },
     ],
     sessionStatus: { [runningChildID]: { type: "busy" } },
@@ -608,10 +618,13 @@ function childMessages(): SessionMessageInfo[] {
 
   return [
     userMessage(undefined, { id: userID }),
-    assistantMessage([textPart("prt_child_text", "Child transcript text")], {
-      id: "msg_child_assistant",
-      parentID: userID,
-    }),
+    {
+      ...assistantMessage([textPart("prt_child_text", "Child transcript text")], {
+        id: "msg_child_assistant",
+        parentID: userID,
+      }),
+      tokens: { input: 38_000, output: 12_000, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
   ]
 }
 

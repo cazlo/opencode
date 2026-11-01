@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client/promise"
 import type { SubagentStatus } from "@/session/composer/subagent-bar"
-import { subagentGroups, subagentOutcome } from "./tree"
+import { subagentContextPercent, subagentEnded, subagentGroups, subagentOutcome } from "./tree"
 
 function info(id: string, parentID: string | undefined, created: number, extra: Partial<SessionInfo> = {}) {
   // SAFETY: the fixtures set every field these functions read; the branded ids are plain strings in them.
@@ -122,4 +122,102 @@ test("the outcome is the latest idle message's, else the session's", () => {
     subagentOutcome(session, []),
     subagentOutcome(undefined, []),
   ]).toEqual(["succeeded", "interrupted", undefined])
+})
+
+test("subagentEnded prefers time.idle, else the latest idle message, else time.updated", () => {
+  const idle = (id: string, created: number): SessionMessageInfo => ({
+    id,
+    type: "idle",
+    time: { created },
+    outcome: "succeeded",
+  })
+
+  expect([
+    subagentEnded(info("with-idle", "root", 1, { time: { created: 1, updated: 9, idle: 6 } }), [idle("m1", 5)]),
+    subagentEnded(info("legacy", "root", 1, { time: { created: 1, updated: 9 } }), [idle("m1", 4), idle("m2", 7)]),
+    subagentEnded(info("no-messages", "root", 1, { time: { created: 1, updated: 9 } }), []),
+  ]).toEqual([6, 7, 9])
+})
+
+test("subagentContextPercent computes context occupancy from the latest assistant step after compaction and before revert", () => {
+  const step = (
+    id: string,
+    tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } },
+    modelID = "claude-opus-4-6",
+  ): SessionMessageInfo =>
+    // SAFETY: fixture covers every field lastAssistantWithUsage and subagentContextPercent read.
+    ({
+      id,
+      type: "assistant",
+      agent: "explore",
+      model: { providerID: "opencode", id: modelID },
+      content: [],
+      tokens,
+      time: { created: 1 },
+    }) as SessionMessageInfo
+
+  const compaction = (id: string, status: "running" | "completed"): SessionMessageInfo =>
+    // SAFETY: fixture covers every field lastAssistantWithUsage reads on compaction messages.
+    ({
+      id,
+      type: "compaction",
+      status,
+      reason: "auto",
+      summary: "",
+      time: { created: 2 },
+    }) as SessionMessageInfo
+
+  const limit = (model: { readonly providerID: string; readonly id: string }) =>
+    model.providerID === "opencode" && model.id === "claude-opus-4-6" ? 200_000 : undefined
+
+  const session = info("child", "root", 1)
+
+  const messages: SessionMessageInfo[] = [
+    step("msg_1", { input: 20_000, output: 5_000, reasoning: 5_000, cache: { read: 10_000, write: 10_000 } }),
+    step("msg_2", { input: 40_000, output: 10_000, reasoning: 10_000, cache: { read: 30_000, write: 10_000 } }),
+    step("msg_streaming"),
+  ]
+
+  expect(subagentContextPercent(session, messages, limit)).toBe(50)
+
+  // SAFETY: revert only needs messageID for lastAssistantWithUsage; branded SessionMessageID is a plain string in tests.
+  const reverted = info("child", "root", 1, { revert: { messageID: "msg_2" } } as Partial<SessionInfo>)
+  expect(subagentContextPercent(reverted, messages, limit)).toBe(25)
+
+  const compacted = [...messages, compaction("msg_compact", "completed")]
+  expect(subagentContextPercent(session, compacted, limit)).toBeUndefined()
+  expect(
+    subagentContextPercent(
+      session,
+      [
+        ...compacted,
+        step("msg_after", { input: 24_000, output: 6_000, reasoning: 0, cache: { read: 0, write: 0 } }),
+      ],
+      limit,
+    ),
+  ).toBe(15)
+
+  expect(
+    subagentContextPercent(
+      session,
+      [step("msg_zero", { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })],
+      limit,
+    ),
+  ).toBeUndefined()
+  expect(
+    subagentContextPercent(
+      session,
+      [step("msg_unknown", { input: 10_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, "missing")],
+      limit,
+    ),
+  ).toBeUndefined()
+
+  const groups = subagentGroups({
+    rootID: "root",
+    sessions: [session],
+    status: () => "succeeded",
+    contextPercent: (item) => subagentContextPercent(item, messages, limit),
+  })
+
+  expect(groups.completed[0]?.contextPercent).toBe(50)
 })

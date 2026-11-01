@@ -1,7 +1,8 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Keybind } from "@opencode/ui/keybind"
+import { ProgressCircle } from "@opencode/ui/progress-circle"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { useLanguage } from "@/runtime/i18n/language"
 import { useCommand } from "@/shell/commands/command"
@@ -133,6 +134,10 @@ export function SubagentList(props: {
   const [now, setNow] = createSignal(Date.now())
   const rows = new Map<string, HTMLButtonElement>()
 
+  const percentFormat = createMemo(
+    () => new Intl.NumberFormat(language.intl(), { style: "percent", maximumFractionDigits: 0 }),
+  )
+
   onMount(() => {
     if (!props.focus) return
     const id = props.focus
@@ -170,7 +175,7 @@ export function SubagentList(props: {
           {(section) => (
             <Show when={section.rows.length > 0}>
               <section>
-                <h3 class="px-2 pb-1 pt-3 text-[12px] font-medium leading-4 text-v2-text-text-faint">
+                <h3 class="px-2 pb-1 pt-3 text-[12px] font-medium leading-[var(--line-height-compact)] text-v2-text-text-faint">
                   {section.title}
                 </h3>
                 <ul>
@@ -183,26 +188,50 @@ export function SubagentList(props: {
                             onCleanup(() => rows.delete(row.id))
                           }}
                           type="button"
-                          class="flex h-8 w-full min-w-0 items-center gap-2 rounded-[6px] pe-2 text-start text-[13px] font-[440] leading-[var(--line-height-compact)] text-v2-text-text-base hover:bg-v2-overlay-simple-overlay-hover"
+                          class="flex h-11 w-full min-w-0 flex-col justify-center gap-0.5 rounded-[6px] pe-2 text-start leading-[var(--line-height-compact)] hover:bg-v2-overlay-simple-overlay-hover"
                           style={{ "padding-inline-start": `${8 + Math.min(row.depth, 4) * 16}px` }}
                           onClick={() => props.onSelect(row.id)}
                         >
-                          <Show when={row.status} fallback={<span class="size-4 shrink-0" aria-hidden="true" />}>
-                            {(status) => (
-                              <>
-                                <SubagentStatusIcon status={status()} />
-                                <span class="sr-only">{language.t(`session.child.status.${status()}`)}</span>
-                              </>
-                            )}
-                          </Show>
-                          <span class="min-w-0 flex-1 truncate">
-                            <bdi dir="auto">{sessionTitle(row.title) ?? language.t("session.tab.session")}</bdi>
+                          <span class="flex w-full min-w-0 items-center gap-2 text-[13px] font-[440] text-v2-text-text-base">
+                            <Show when={row.status} fallback={<span class="size-4 shrink-0" aria-hidden="true" />}>
+                              {(status) => (
+                                <>
+                                  <SubagentStatusIcon status={status()} />
+                                  <span class="sr-only">{language.t(`session.child.status.${status()}`)}</span>
+                                </>
+                              )}
+                            </Show>
+                            <span class="min-w-0 flex-1 truncate">
+                              <bdi dir="auto">{sessionTitle(row.title) ?? language.t("session.tab.session")}</bdi>
+                            </span>
                           </span>
-                          <Show when={row.agent}>
-                            {(agent) => <span class="shrink-0 capitalize text-v2-text-text-faint">{agent()}</span>}
-                          </Show>
-                          <span class="shrink-0 text-[12px] tabular-nums text-v2-text-text-muted">
-                            {formatElapsed((row.ended ?? now()) - row.started, language.t)}
+                          <span class="flex w-full min-w-0 items-center gap-1.5 ps-6 text-[12px] font-[440] tabular-nums text-v2-text-text-faint">
+                            <Show when={row.agent}>
+                              {(agent) => (
+                                <>
+                                  <span class="min-w-0 truncate capitalize">{agent()}</span>
+                                  <span aria-hidden="true" class="shrink-0">
+                                    ·
+                                  </span>
+                                </>
+                              )}
+                            </Show>
+                            <Show when={row.contextPercent !== undefined}>
+                              <>
+                                <span class="flex shrink-0 items-center gap-1 text-v2-text-text-muted">
+                                  <span aria-hidden="true" class="flex shrink-0 items-center">
+                                    <ProgressCircle percentage={row.contextPercent ?? 0} size={12} />
+                                  </span>
+                                  <span>{percentFormat().format((row.contextPercent ?? 0) / 100)}</span>
+                                </span>
+                                <span aria-hidden="true" class="shrink-0">
+                                  ·
+                                </span>
+                              </>
+                            </Show>
+                            <span class="shrink-0 text-v2-text-text-muted">
+                              {formatElapsed((row.ended ?? now()) - row.started, language.t)}
+                            </span>
                           </span>
                         </button>
                       </li>

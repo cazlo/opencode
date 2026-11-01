@@ -1,18 +1,23 @@
 import { batch, createComputed, createEffect, createMemo } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
+import { syncWhileBooting } from "@/providers/catalog/providers"
 import { same } from "@/runtime/persistence/equality"
 import { useLanguage } from "@/runtime/i18n/language"
+import { useServerSDK } from "@/runtime/server/client"
 import { useServer } from "@/runtime/server/current"
 import { useCommand } from "@/shell/commands/command"
 import type { SessionModel } from "@/session/model"
 import type { SessionScreenLayout } from "@/session/screen-layout"
 import { useOpenSessionRoute } from "@/session/session-identity-header"
 import { subagentPaneLayout } from "@/session/session-panel-width"
-import { subagentGroups, subagentOutcome, type SubagentRow } from "./tree"
+import { useWorkspaceLocation } from "@/workspaces/location"
+import { subagentContextPercent, subagentEnded, subagentGroups, subagentOutcome, type SubagentRow } from "./tree"
 
 // The subagent pane's state: which of the routed session's subagents it shows, and whether it is open.
 export function createSubagentPane(input: { session: SessionModel; screen: SessionScreenLayout }) {
   const data = useServer().ctx.data
+  const sdk = useServerSDK()
+  const workspaceLocation = useWorkspaceLocation()
   const command = useCommand()
   const language = useLanguage()
   const openRoute = useOpenSessionRoute()
@@ -35,6 +40,19 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
   const available = () => input.session.isDesktop() && !!routed() && !!input.session.layout.tabKey()
   const shown = () => available() && view().opened()
 
+  const contextLimit = (directory: string | undefined, ref: { readonly providerID: string; readonly id: string }) => {
+    const dir = directory || workspaceLocation().directory
+    const models = data.location.model.list(dir ? { directory: dir } : undefined)
+
+    if (!models) return undefined
+
+    const model =
+      models.findLast((item) => item.providerID === ref.providerID && item.id === ref.id && item.status !== "deprecated") ??
+      models.findLast((item) => item.providerID === ref.providerID && item.id === ref.id)
+
+    return model?.limit.context
+  }
+
   const built = createMemo(() => {
     const id = routed()
 
@@ -47,6 +65,11 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
         data.session.status(member) === "running"
           ? "running"
           : subagentOutcome(data.session.get(member), data.session.message.list(member)),
+      ended: (info) => subagentEnded(info, data.session.message.list(info.id)),
+      contextPercent: (info) =>
+        subagentContextPercent(info, data.session.message.list(info.id), (model) =>
+          contextLimit(info.location.directory, model),
+        ),
     })
   })
 
@@ -64,7 +87,7 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
   // A subagent's own subagents load with it, so the list shows nested ones before the subagent is opened. Each load
   // lists more subagents, which load in turn.
   createEffect(() => {
-    if (!shown()) return
+    if (!shown() || sdk.connection.status() !== "connected") return
 
     for (const id of listed()) void data.session.sync(id, { children: true }).catch(() => undefined)
   })
@@ -116,6 +139,37 @@ export function createSubagentPane(input: { session: SessionModel; screen: Sessi
 
     // A subagent opened from its card can arrive before its info; it shows while that loads.
     return lineage(id, root) !== "no" ? id : undefined
+  })
+
+  // While the list itself is on screen, each listed subagent's messages and model catalog load so its outcome, end
+  // time, and context window percentage render before the subagent is opened.
+  createEffect(() => {
+    if (!shown() || selected() || sdk.connection.status() !== "connected") return
+    const ids = listed()
+    const directories = new Set<string>()
+    const fallback = workspaceLocation().directory
+
+    if (fallback) directories.add(fallback)
+
+    for (const id of ids) {
+      void data.session.message.sync(id).catch(() => undefined)
+      const dir = data.session.get(id)?.location.directory
+
+      if (dir) directories.add(dir)
+    }
+
+    if (directories.size === 0) {
+      void (async () => {
+        await data.location.syncInfo()
+        await syncWhileBooting(() => data.location.model.sync(data.location.default()))
+      })().catch(() => undefined)
+
+      return
+    }
+
+    for (const directory of directories) {
+      void syncWhileBooting(() => data.location.model.sync({ directory })).catch(() => undefined)
+    }
   })
 
   const select = (id: string | undefined, focus?: string, keepSpeculative?: boolean) => {

@@ -32,7 +32,7 @@ import {
 import type { SubagentPaneModel } from "./controller"
 import { createSubagentModelLabel } from "./model-label"
 import { SubagentList, SubagentPaneFrame } from "./pane"
-import { subagentOutcome } from "./tree"
+import { subagentEnded, subagentOutcome } from "./tree"
 
 // The routed session's subagents beside its transcript: a list of them, and any one's live, read-only transcript.
 export function SubagentPane(props: {
@@ -355,7 +355,7 @@ function SubagentTranscript(props: {
             model={model()}
             status={status()}
             started={session().time.created}
-            ended={status() === "running" ? undefined : (session().time.idle ?? session().time.updated)}
+            ended={status() === "running" ? undefined : subagentEnded(session(), messages())}
             stopping={load.stopping}
             onStop={stop}
           />
