@@ -1,5 +1,5 @@
 import { STORY_TIME } from "@opencode/session-ui/storybook"
-import { SubagentList, SubagentPaneFrame } from "./pane"
+import { SubagentHeader, SubagentList } from "./pane"
 import type { SubagentRow } from "./tree"
 
 const now = STORY_TIME
@@ -71,23 +71,21 @@ const completed = [
 
 function Pane(props: { groups: { running: SubagentRow[]; completed: SubagentRow[] } }) {
   return (
-    <div class="flex h-[520px] w-[420px] flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]">
-      <SubagentPaneFrame title="Subagents" onClose={() => {}}>
-        <SubagentList groups={props.groups} onSelect={() => {}} />
-      </SubagentPaneFrame>
+    <div class="flex h-[520px] w-[420px] flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base pt-1 shadow-[var(--v2-elevation-raised)]">
+      <SubagentList groups={props.groups} onSelect={() => {}} />
     </div>
   )
 }
 
 export default {
-  title: "OpenCode/Session/Subagent pane",
-  id: "session-subagent-pane",
+  title: "OpenCode/Session/Subagent tab",
+  id: "session-subagent-tab",
   parameters: {
     layout: "centered",
     docs: {
       description: {
         component:
-          "The routed session's subagents beside its transcript, running ones first. Nested subagents indent under the one that started them.",
+          "The routed session's subagents as a side tab, running ones first. Nested subagents indent under the one that started them; each opens in a tab of its own.",
       },
     },
   },
@@ -102,3 +100,11 @@ export const RunningAndCompleted = {
 export const Nested = { render: () => <Pane groups={{ running, completed }} /> }
 
 export const Empty = { render: () => <Pane groups={{ running: [], completed: [] }} /> }
+
+export const Header = {
+  render: () => (
+    <div class="flex w-[420px] flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]">
+      <SubagentHeader title="Check the lane alignment in right-to-left layouts" onOpenFull={() => {}} />
+    </div>
+  ),
+}

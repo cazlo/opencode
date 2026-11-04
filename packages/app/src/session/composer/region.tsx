@@ -420,7 +420,7 @@ export function ActiveSessionComposerRegion(props: {
   model: SessionComposerController
   suggestionBoundary: () => HTMLElement | undefined
   onReveal: (target: string) => void
-  /** Takes a subagent opened from the activity capsule when it can show it beside the transcript. */
+  /** Takes a subagent opened from the activity capsule when a side tab can show it. */
   openSubagent?: (sessionID: string) => boolean
 }) {
   const location = useWorkspaceLocation()

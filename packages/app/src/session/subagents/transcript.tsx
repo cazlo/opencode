@@ -1,6 +1,7 @@
 import { createEffect, createMemo, ErrorBoundary, on, onCleanup, Show, untrack, type Accessor } from "solid-js"
 import { createStore } from "solid-js/store"
 import type { MountedSession, SessionScreen } from "@opencode/plugin/gui"
+import type { SessionSubagents } from "@opencode/plugin/gui/builtin"
 import type { SessionUserActions } from "@opencode/session-ui/actions"
 import { DataContext, useData } from "@opencode/session-ui/context"
 import { frameLoop } from "@opencode/ui/motion"
@@ -13,12 +14,9 @@ import { SessionRouteKey, SessionStateKey } from "@/runtime/server/scope"
 import { useWorkspaceLocation } from "@/workspaces/location"
 import { errorMessage } from "@/shell/layout/helpers"
 import { showToast } from "@/shell/notifications/toast"
-import { setPanelResizing } from "@/shell/panel-motion"
-import { ResizeHandle } from "@opencode/ui/resize-handle"
-import { SubagentBar } from "@/session/composer/subagent-bar"
+import { SubagentBar, SubagentStatusIcon, type SubagentStatus } from "@/session/composer/subagent-bar"
 import type { TimelineActionsView } from "@/session/composer/timeline-actions"
 import type { SessionModel } from "@/session/model"
-import { SUBAGENT_PANE_WIDTH_MIN } from "@/session/session-panel-width"
 import { sessionTitle } from "@/session/title"
 import type { TimelineSessionSource } from "@/session/timeline/controller"
 import { MessageTimeline } from "@/session/timeline/message-timeline"
@@ -29,117 +27,84 @@ import {
   leadingTurnPageLimit,
   loadOlderTimeline,
 } from "@/session/timeline/model"
-import type { SubagentPaneModel } from "./controller"
+import { createSubagentGroups, type SessionSubagentsModel } from "./controller"
 import { createSubagentModelLabel } from "./model-label"
-import { SubagentList, SubagentPaneFrame } from "./pane"
+import { SubagentHeader, SubagentList } from "./pane"
 import { subagentEnded, subagentOutcome } from "./tree"
 
-// The routed session's subagents beside its transcript: a list of them, and any one's live, read-only transcript.
-export function SubagentPane(props: {
-  pane: SubagentPaneModel
+// The routed session's subagents as the session screen draws them for a side panel: the list of them, any one's live,
+// read-only transcript, and the status mark a tab shows.
+export function createSubagentsView(input: {
+  model: SessionSubagentsModel
   session: SessionModel
   view: Accessor<MountedSession>
   screen: SessionScreen
   actions: (view: TimelineActionsView) => SessionUserActions
-  /** The floating review toggle sits over the pane's header. */
-  reserveReviewToggle: boolean
-  /** Clears a blocking request dock beneath a floating pane. */
-  bottomOffset?: number
-}) {
-  const language = useLanguage()
+}): SessionSubagents {
   const data = useServer().ctx.data
-  const bottom = () => (props.pane.layout().docked ? undefined : `${Math.max(0, props.bottomOffset ?? 0)}px`)
 
-  return (
-    // The handle straddles the pane's edge, so the frame clips and this wrapper does not.
-    <aside
-      id="subagent-pane"
-      aria-label={language.t("session.subagents.title")}
-      class="flex min-h-0 shrink-0"
-      classList={{
-        "relative h-full": props.pane.layout().docked,
-        // Over the composer, which draws above the transcript's frame, except when a blocking prompt waits there.
-        "absolute top-0 end-0 z-[80]": !props.pane.layout().docked,
-      }}
-      style={{ width: `${props.pane.layout().width}px`, bottom: bottom() }}
-    >
-      <ResizeHandle
-        direction="horizontal"
-        edge="start"
-        size={props.pane.layout().width}
-        min={SUBAGENT_PANE_WIDTH_MIN}
-        max={props.pane.layout().max}
-        onResize={props.pane.resize}
-        onDraggingChange={setPanelResizing}
-      />
-      <div
-        class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-v2-background-bg-base"
-        classList={{
-          "shadow-[var(--v2-elevation-raised)]": props.pane.layout().docked,
-          "shadow-[var(--v2-elevation-floating)]": !props.pane.layout().docked,
-        }}
-      >
-        <Show
-          when={props.pane.selected()}
-          keyed
-          fallback={
-            <SubagentPaneFrame
-              title={language.t("session.subagents.title")}
-              onClose={props.pane.close}
-              reserveReviewToggle={props.reserveReviewToggle}
-            >
-              <SubagentList
-                groups={props.pane.groups()}
-                onSelect={props.pane.select}
-                focus={props.pane.focus()}
-                onAutoFocus={props.pane.clearFocus}
-              />
-            </SubagentPaneFrame>
-          }
-        >
-          {(id) => (
-            <SubagentPaneFrame
-              title={sessionTitle(data.session.get(id)?.title) ?? language.t("session.tab.session")}
-              onBack={props.pane.back}
-              onOpenFull={() => props.pane.openFull(id)}
-              onClose={props.pane.close}
-              autoFocusBack={props.pane.focusBack() === id}
-              onAutoFocus={props.pane.clearFocusBack}
-              reserveReviewToggle={props.reserveReviewToggle}
-            >
-              <ErrorBoundary
-                fallback={
-                  <p class="m-auto text-[13px] leading-[var(--line-height-compact)] text-v2-text-text-muted">
-                    {language.t("common.requestFailed")}
-                  </p>
-                }
-              >
-                <SubagentTranscript
-                  id={id}
-                  pane={props.pane}
-                  session={props.session}
-                  view={props.view}
-                  screen={props.screen}
-                  actions={props.actions}
-                />
-              </ErrorBoundary>
-            </SubagentPaneFrame>
-          )}
-        </Show>
-      </div>
-    </aside>
-  )
+  const status = (id: string): SubagentStatus | undefined =>
+    data.session.status(id) === "running"
+      ? "running"
+      : subagentOutcome(data.session.get(id), data.session.message.list(id))
+
+  return {
+    List: () => {
+      const groups = createSubagentGroups(() => input.session.identity.params.id)
+
+      return (
+        <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden pt-1">
+          <SubagentList groups={groups} onSelect={(id) => input.model.open(id)} />
+        </div>
+      )
+    },
+    Transcript: (props) => {
+      const language = useLanguage()
+      // A tab renders once for its subagent.
+      const id = untrack(() => props.id)
+
+      return (
+        <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          <SubagentHeader
+            title={sessionTitle(data.session.get(id)?.title) ?? language.t("session.tab.session")}
+            onOpenFull={() => {
+              props.onOpenFull?.()
+              input.model.openFull(id)
+            }}
+          />
+          <ErrorBoundary
+            fallback={
+              <p class="m-auto text-[13px] leading-[var(--line-height-compact)] text-v2-text-text-muted">
+                {language.t("common.requestFailed")}
+              </p>
+            }
+          >
+            <SubagentTranscript
+              id={id}
+              model={input.model}
+              session={input.session}
+              view={input.view}
+              screen={input.screen}
+              actions={input.actions}
+            />
+          </ErrorBoundary>
+        </div>
+      )
+    },
+    Status: (props) => <Show when={status(props.id)}>{(value) => <SubagentStatusIcon status={value()} />}</Show>,
+    title: (id) => sessionTitle(input.model.title(id)),
+    state: input.model.state,
+  }
 }
 
 function SubagentTranscript(props: {
   id: string
-  pane: SubagentPaneModel
+  model: SessionSubagentsModel
   session: SessionModel
   view: Accessor<MountedSession>
   screen: SessionScreen
   actions: (view: TimelineActionsView) => SessionUserActions
 }) {
-  // The pane is keyed by the selected subagent, so this component reads one id for its life.
   const id = untrack(() => props.id)
   const language = useLanguage()
   const server = useServer()
@@ -147,6 +112,7 @@ function SubagentTranscript(props: {
   const location = useWorkspaceLocation()
   const ui = useData()
   const data = server.ctx.data
+
   const [load, setLoad] = createStore<{ state: "loading" | "ready" | "failed"; stopping: boolean }>({
     state: "loading",
     stopping: false,
@@ -199,6 +165,7 @@ function SubagentTranscript(props: {
         ])
           .then(() => {
             if (!active) return
+
             return enrichLeadingTurn({
               current: () => current && active,
               messages,
@@ -283,7 +250,7 @@ function SubagentTranscript(props: {
           </div>
         }
       >
-        {/* Cards inside this transcript open their subagents in the pane too, and resolve against this session. */}
+        {/* Cards inside this transcript open their subagents in tabs too, and resolve against this session. */}
         <DataContext.Provider
           value={{
             get store() {
@@ -302,7 +269,7 @@ function SubagentTranscript(props: {
               return ui.backgroundCompaction
             },
             navigateToSession: (child: string) => {
-              if (!props.pane.openInPane(child)) ui.navigateToSession?.(child)
+              if (!props.model.open(child)) ui.navigateToSession?.(child)
             },
             sessionHref: ui.sessionHref,
             readMedia: ui.readMedia,
@@ -330,7 +297,7 @@ function SubagentTranscript(props: {
                 reserveReviewToggle={false}
                 bottomInset={0}
                 anchor={(messageID) => `subagent-message-${messageID}`}
-                measurementKey={`${server.key}/${id}/subagent-pane`}
+                measurementKey={`${server.key}/${id}/subagent-tab`}
                 scroll={follow.scroll}
                 pinned={follow.pinned()}
                 onResumeScroll={follow.resume}
@@ -374,12 +341,13 @@ function createSubagentTimelineFollow(input: {
   count: Accessor<number>
   more: Accessor<boolean>
   loading: Accessor<boolean>
-  loadOlder: () => Promise<unknown>
+  loadOlder: () => Promise<void>
 }) {
   const [follow, setFollow] = createStore({ pinned: true, scroll: { overflow: false, jump: false } })
   let scroller: HTMLDivElement | undefined
 
   let scrollToEnd = (_behavior?: ScrollBehavior) => {}
+
   let measureFrame: (() => void) | undefined
   let measureTarget: HTMLDivElement | undefined
   let fillFrame: (() => void) | undefined
@@ -429,10 +397,13 @@ function createSubagentTimelineFollow(input: {
         requesting = false
 
         if (!input.current() || input.count() <= before) return
+
         if (follow.pinned) {
           fill()
+
           return
         }
+
         if (scroller && scroller.scrollTop < 200 && input.more() && continuationFrame === undefined) {
           continuationFrame = requestAnimationFrame(() => {
             continuationFrame = undefined
@@ -483,6 +454,7 @@ function createSubagentTimelineFollow(input: {
   onCleanup(() => {
     measureFrame?.()
     fillFrame?.()
+
     if (continuationFrame !== undefined) cancelAnimationFrame(continuationFrame)
   })
 
@@ -495,6 +467,7 @@ function createSubagentTimelineFollow(input: {
     resume: (behavior?: ScrollBehavior) => {
       setFollow("pinned", true)
       scrollToEnd(behavior)
+
       if (scroller) scheduleScrollState(scroller)
     },
     setScrollRef: (element: HTMLDivElement | undefined) => {

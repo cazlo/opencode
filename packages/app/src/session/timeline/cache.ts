@@ -128,7 +128,7 @@ export function createTimelineCache(
                 get backgroundCompaction() {
                   return backgroundCompaction()
                 },
-                // On desktop the subagent pane takes subagents opened from this transcript; otherwise they open in place.
+                // On desktop a side tab takes subagents opened from this transcript; otherwise they open in place.
                 navigateToSession:
                   data.navigateToSession &&
                   ((sessionID: string) => {

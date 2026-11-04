@@ -16,6 +16,7 @@ import {
 import { createStore } from "solid-js/store"
 import { ResizeHandle } from "@opencode/ui/resize-handle"
 import type { BackgroundTask, MountedSession, SessionScreen } from "@opencode/plugin/gui"
+import type { SessionSubagents } from "@opencode/plugin/gui/builtin"
 import { MessageTimeline } from "@/session/timeline/message-timeline"
 import { ComposerDropzone } from "@/composer/dropzone"
 import { useSettings } from "@/settings/model"
@@ -49,9 +50,8 @@ import { usePlatform } from "@/runtime/platform/platform"
 import { useServer } from "@/runtime/server/current"
 import { reviewGlyphFill, SessionReviewToggle } from "./header/session-header-actions"
 import { createTimelineCache } from "./timeline/cache"
-import { createSubagentPane } from "./subagents/controller"
-import { SubagentPaneToggle } from "./subagents/pane"
-import { SubagentPane } from "./subagents/transcript"
+import { createSessionSubagents } from "./subagents/controller"
+import { createSubagentsView } from "./subagents/transcript"
 import { createPanelMotion, holdLandingWidth, panelOpacity, setPanelResizing } from "@/shell/panel-motion"
 
 export function SessionScreenView(props: { session: SessionModel }) {
@@ -66,6 +66,7 @@ export function SessionScreenView(props: { session: SessionModel }) {
         view={mounted.view}
         bindBackground={mounted.bindBackground}
         bindPrompt={mounted.bindPrompt}
+        bindSubagents={mounted.bindSubagents}
       />
     </PluginLinks>
   )
@@ -78,6 +79,7 @@ function SessionScreenContent(props: {
   screen: SessionScreen
   bindBackground: (tasks: () => readonly BackgroundTask[]) => void
   bindPrompt: (prompt: { quotable: () => boolean; focus: () => void; focused: () => boolean }) => void
+  bindSubagents: (subagents: SessionSubagents) => void
 }) {
   const session = props.session
   const language = useLanguage()
@@ -249,10 +251,19 @@ function SessionScreenContent(props: {
     visible: conversationVisible,
   })
 
-  const subagents = createSubagentPane({ session, screen })
+  const subagents = createSessionSubagents({ session, view: props.view, screen: props.screen })
 
   props.bindBackground(composer.requests.background.tasks)
   props.bindPrompt({ quotable: composer.quote.available, focus: composer.quote.focus, focused: composer.focused })
+  props.bindSubagents(
+    createSubagentsView({
+      model: subagents,
+      session,
+      view: props.view,
+      screen: props.screen,
+      actions: composer.actions.timeline,
+    }),
+  )
   useUsageExceededDialogs({
     selection: () => composer.active()?.composer.model.selection,
     onDone: () => composer.active()?.composer.restoreFocus(),
@@ -321,7 +332,7 @@ function SessionScreenContent(props: {
             onUserScroll={timeline.view.markUserScroll}
             onHistoryScroll={timeline.view.onHistoryScroll}
             centered={screen.centered()}
-            reserveReviewToggle={!sideVisible() && !subagents.shown()}
+            reserveReviewToggle={!sideVisible()}
             onContentResize={timeline.view.contentResized}
             bottomInset={timeline.inset()}
             setVisibleRef={timeline.view.setVisibleRef}
@@ -336,18 +347,13 @@ function SessionScreenContent(props: {
                 <TimelineSearchBar controller={timelineSearch} />
               </Show>
             }
-            headerActions={
-              <Show when={active() && subagents.toggleVisible()}>
-                <SubagentPaneToggle opened={subagents.shown()} onToggle={subagents.toggle} />
-              </Show>
-            }
           />
         </PluginLinks>
       )
     },
     () => conversationVisible() && messagesReady(),
     (sessionID) => server.ctx.data.session.message.list(sessionID),
-    subagents.openInPane,
+    subagents.open,
   )
 
   const mobileTabs = () => (
@@ -460,7 +466,7 @@ function SessionScreenContent(props: {
               model={model}
               suggestionBoundary={timeline.visible}
               onReveal={timeline.actions.revealPart}
-              openSubagent={subagents.openInPane}
+              openSubagent={subagents.open}
             />
           )}
         </Show>
@@ -501,22 +507,9 @@ function SessionScreenContent(props: {
             onKeyDown={revealTimelineScrollbar}
           >
             <Show when={!!session.identity.params.id}>
-              <div data-slot="session-chat-row" class="relative flex min-h-0 flex-1 gap-2">
-                <SessionPanelFrame raised>
-                  <ErrorBoundary fallback={sessionErrorFallback}>{sessionPanelContent()}</ErrorBoundary>
-                </SessionPanelFrame>
-                <Show when={subagents.shown()}>
-                  <SubagentPane
-                    pane={subagents}
-                    session={session}
-                    view={props.view}
-                    screen={props.screen}
-                    actions={composer.actions.timeline}
-                    reserveReviewToggle={!sideVisible()}
-                    bottomOffset={!subagents.layout().docked && composer.requests.blocked() ? timeline.inset() : 0}
-                  />
-                </Show>
-              </div>
+              <SessionPanelFrame raised>
+                <ErrorBoundary fallback={sessionErrorFallback}>{sessionPanelContent()}</ErrorBoundary>
+              </SessionPanelFrame>
             </Show>
             <Show when={windowDragEnabled(platform)}>
               <SessionHeaderDrag pane={chat} gap={headerGap()} />

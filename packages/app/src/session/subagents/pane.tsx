@@ -1,149 +1,48 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
-import { Keybind } from "@opencode/ui/keybind"
 import { ProgressCircle } from "@opencode/ui/progress-circle"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { useLanguage } from "@/runtime/i18n/language"
-import { useCommand } from "@/shell/commands/command"
-import { SessionHeaderSpacer } from "@/session/header/session-header"
 import { formatElapsed } from "@/session/composer/activity-chips"
 import { SubagentStatusIcon } from "@/session/composer/subagent-bar"
 import { sessionTitle } from "@/session/title"
 import type { SubagentRow } from "./tree"
 
-export function SubagentPaneToggle(props: { opened: boolean; onToggle: () => void }) {
-  const command = useCommand()
+// A subagent tab's header: its full title, which the tab's label truncates, and the way to its own session.
+export function SubagentHeader(props: { title: string; onOpenFull: () => void }) {
   const language = useLanguage()
-  const keys = () => command.keybindParts("session.subagents.toggle")
 
   return (
-    <Tooltip
-      class="shrink-0"
-      placement="bottom"
-      value={
-        <>
-          {language.t("command.session.subagents.toggle")}
-          <Show when={keys().length > 0}>
-            <Keybind keys={keys()} variant="neutral" />
-          </Show>
-        </>
-      }
-    >
-      <IconButton
-        type="button"
-        variant="ghost-muted"
-        size="large"
-        class="shrink-0"
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={props.onToggle}
-        aria-label={language.t("command.session.subagents.toggle")}
-        aria-expanded={props.opened}
-        aria-controls="subagent-pane"
-        icon={<Icon name="branch-out" />}
-      />
-    </Tooltip>
-  )
-}
-
-export function SubagentPaneFrame(
-  props: ParentProps<{
-    title: string
-    onBack?: () => void
-    onOpenFull?: () => void
-    onClose: () => void
-    autoFocusBack?: boolean
-    onAutoFocus?: () => void
-    /** The floating review toggle sits over this header's end. */
-    reserveReviewToggle?: boolean
-  }>,
-) {
-  const language = useLanguage()
-  let back: HTMLButtonElement | undefined
-
-  // Opening a subagent moves focus into its view, from the row or card that was activated.
-  onMount(() => {
-    if (!props.autoFocusBack) return
-    props.onAutoFocus?.()
-    if (!editable(document.activeElement)) back?.focus()
-  })
-
-  return (
-    <>
-      <header class="flex h-12 shrink-0 items-center gap-1 ps-2 pe-3">
-        <Show when={props.onBack}>
-          {(onBack) => (
-            <Tooltip placement="bottom" value={language.t("session.subagents.back")}>
-              <IconButton
-                ref={back}
-                type="button"
-                variant="ghost-muted"
-                size="large"
-                class="shrink-0"
-                icon={<Icon name="outline-arrow-left" />}
-                aria-label={language.t("session.subagents.back")}
-                onClick={onBack()}
-              />
-            </Tooltip>
-          )}
-        </Show>
-        <h2 class="min-w-0 flex-1 truncate px-1 text-[13px] font-[530] leading-[var(--line-height-compact)] tracking-[-0.04px] text-v2-text-text-base">
-          <bdi dir="auto">{props.title}</bdi>
-        </h2>
-        <Show when={props.onOpenFull}>
-          {(onOpenFull) => (
-            <Tooltip placement="bottom" value={language.t("session.subagents.openFull")}>
-              <IconButton
-                type="button"
-                variant="ghost-muted"
-                size="large"
-                class="shrink-0"
-                icon={<Icon name="outline-arrow-up-right" />}
-                aria-label={language.t("session.subagents.openFull")}
-                onClick={onOpenFull()}
-              />
-            </Tooltip>
-          )}
-        </Show>
-        <Tooltip placement="bottom" value={language.t("session.subagents.close")}>
-          <IconButton
-            type="button"
-            variant="ghost-muted"
-            size="large"
-            class="shrink-0"
-            icon={<Icon name="close" />}
-            aria-label={language.t("session.subagents.close")}
-            onClick={props.onClose}
-          />
-        </Tooltip>
-        <SessionHeaderSpacer visible={props.reserveReviewToggle === true} />
-      </header>
-      <div class="relative flex min-h-0 flex-1 flex-col">{props.children}</div>
-    </>
+    <header class="flex h-10 shrink-0 items-center gap-1 ps-3 pe-2">
+      <h2 class="min-w-0 flex-1 truncate text-[13px] font-[530] leading-[var(--line-height-compact)] tracking-[-0.04px] text-v2-text-text-base">
+        <bdi dir="auto">{props.title}</bdi>
+      </h2>
+      <Tooltip placement="bottom" value={language.t("session.subagents.openFull")}>
+        <IconButton
+          type="button"
+          variant="ghost-muted"
+          size="large"
+          class="shrink-0"
+          icon={<Icon name="outline-arrow-up-right" />}
+          aria-label={language.t("session.subagents.openFull")}
+          onClick={props.onOpenFull}
+        />
+      </Tooltip>
+    </header>
   )
 }
 
 export function SubagentList(props: {
   groups: { running: readonly SubagentRow[]; completed: readonly SubagentRow[] }
   onSelect: (id: string) => void
-  /** The subagent whose view was just left; its row takes focus. */
-  focus?: string
-  onAutoFocus?: () => void
 }) {
   const language = useLanguage()
   const [now, setNow] = createSignal(Date.now())
-  const rows = new Map<string, HTMLButtonElement>()
 
   const percentFormat = createMemo(
     () => new Intl.NumberFormat(language.intl(), { style: "percent", maximumFractionDigits: 0 }),
   )
-
-  onMount(() => {
-    if (!props.focus) return
-    const id = props.focus
-    props.onAutoFocus?.()
-    if (!editable(document.activeElement)) rows.get(id)?.focus()
-  })
 
   // One clock for every row, ticking only while something runs.
   createEffect(() => {
@@ -183,10 +82,6 @@ export function SubagentList(props: {
                     {(row) => (
                       <li>
                         <button
-                          ref={(element) => {
-                            rows.set(row.id, element)
-                            onCleanup(() => rows.delete(row.id))
-                          }}
                           type="button"
                           class="flex h-11 w-full min-w-0 flex-col justify-center gap-0.5 rounded-[6px] pe-2 text-start leading-[var(--line-height-compact)] hover:bg-v2-overlay-simple-overlay-hover"
                           style={{ "padding-inline-start": `${8 + Math.min(row.depth, 4) * 16}px` }}
@@ -245,8 +140,4 @@ export function SubagentList(props: {
       </div>
     </Show>
   )
-}
-
-function editable(node: Element | null) {
-  return node instanceof HTMLElement && (node.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName))
 }

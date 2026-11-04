@@ -24,7 +24,6 @@ const keybinds: Record<string, string> = {
   "file.attach": "mod+u",
   "prompt.mode.shell": "mod+shift+x",
   "prompt.mode.normal": "mod+shift+e",
-  "session.subagents.toggle": "mod+shift+e",
   "permissions.autoaccept": "mod+shift+a",
   "agent.cycle": "mod+.",
   "model.choose": "mod+m",

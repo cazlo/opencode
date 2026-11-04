@@ -44,10 +44,6 @@ export const useSessionLayout = () => {
     setBottomHeight: (height: number) => tabs.setRegionSize(currentTab(), "bottomHeight", height),
     splitRatio: () => tabs.regionSize(currentTab(), "splitRatio"),
     setSplitRatio: (ratio: number) => tabs.setRegionSize(currentTab(), "splitRatio", ratio),
-    subagentsOpened: () => tabs.region(currentTab(), "subagents"),
-    setSubagentsOpened: (opened: boolean) => tabs.setRegion(currentTab(), "subagents", opened),
-    subagentsWidth: () => tabs.regionSize(currentTab(), "subagentsWidth"),
-    setSubagentsWidth: (width: number) => tabs.setRegionSize(currentTab(), "subagentsWidth", width),
   }
 
   return {

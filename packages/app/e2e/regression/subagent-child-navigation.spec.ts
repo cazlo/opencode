@@ -67,6 +67,7 @@ test("keeps the parent title anchored when opening a subagent", async ({ page })
     // Measuring before then can read the detached heading, whose empty bounds put the start at 0.
     const card = page.locator(`a[href="${sessionHref(childID)}"]`)
     await expect(card).toBeVisible()
+
     const start = await titleInlineStart(
       page.locator("[data-session-title]").getByRole("heading", { name: parentTitle }),
     )
@@ -87,43 +88,52 @@ test("keeps the parent title anchored when opening a subagent", async ({ page })
   }
 })
 
-test("opens a subagent card in a pane beside the transcript", async ({ page }) => {
+test("opens a subagent card in a side tab beside the transcript", async ({ page }) => {
   await setupPane(page)
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
 
-  // The main transcript stays where it is; the subagent's own transcript shows beside it.
+  // The main transcript stays where it is; the subagent's own transcript shows in a side tab.
   await expectPath(page, sessionHref(parentID))
   await expect(page.getByRole("heading", { name: parentTitle })).toBeVisible()
-  const pane = page.getByRole("complementary", { name: "Subagents" })
-  await expect(pane.getByText("Child transcript text")).toBeVisible()
+  const panel = page.locator("#review-panel")
+  const childTab = panel.getByRole("tab", { name: new RegExp(childTitle) })
+  await expect(childTab).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
 
-  await pane.getByRole("button", { name: "Back", exact: true }).click()
-  // The running subagent comes before the finished one.
-  const rows = pane.getByRole("listitem")
+  // The New tab view offers the list of subagents, the running one before the finished one.
+  await panel.getByRole("button", { name: "Add tab", exact: true }).click()
+  await panel.getByRole("button", { name: /^Subagents/ }).click()
+  const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+  const rows = panel.getByRole("tabpanel").getByRole("listitem")
   await expect(rows).toHaveText([new RegExp(runningChildTitle), new RegExp(childTitle)])
-  // Back leaves focus on the row of the subagent just left.
-  await expect(pane.getByRole("button", { name: new RegExp(childTitle) })).toBeFocused()
 
+  // Each subagent opens in a tab of its own.
   await rows.filter({ hasText: runningChildTitle }).getByRole("button").click()
-  const interrupt = pane.getByRole("button", { name: "Interrupt subagent" })
+  await expect(panel.getByRole("tab", { name: new RegExp(runningChildTitle) })).toHaveAttribute("aria-selected", "true")
+  const interrupt = panel.getByRole("button", { name: "Interrupt subagent" })
   await expect(interrupt).toBeVisible()
+
   const interrupted = page.waitForRequest(
     (req) => req.method() === "POST" && apiRoute(`/api/session/${runningChildID}/interrupt`).test(req.url()),
   )
+
   await interrupt.click()
   await interrupted
-  await pane.getByRole("button", { name: "Back", exact: true }).click()
 
+  // A subagent that already has a tab selects it rather than opening another.
+  await listTab.click()
   await rows.filter({ hasText: childTitle }).getByRole("button").click()
-  await expect(pane.getByText("Child transcript text")).toBeVisible()
-  await pane.getByRole("button", { name: "Open full session" }).click()
+  await expect(childTab).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tab", { name: new RegExp(childTitle) })).toHaveCount(1)
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+
+  await panel.getByRole("button", { name: "Open full session" }).click()
   await expectPath(page, sessionHref(childID))
   await expectSessionTitle(page, taskDescription)
-  // The pane would only list the subagent's own, so it closes with the way in.
-  await expect(pane).toHaveCount(0)
 })
 
 test("lists a finished subagent's own subagents before it is opened", async ({ page }) => {
@@ -140,8 +150,9 @@ test("lists a finished subagent's own subagents before it is opened", async ({ p
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
-  await page.getByRole("button", { name: "Toggle subagents" }).click()
-  await expect(page.getByRole("complementary", { name: "Subagents" }).getByRole("listitem")).toHaveText([
+  // The test browser reports Windows, so the app's modifier is Control on every host.
+  await page.keyboard.press("Control+Shift+E")
+  await expect(page.locator("#review-panel").getByRole("tabpanel").getByRole("listitem")).toHaveText([
     new RegExp(childTitle),
     new RegExp(grandchildTitle),
   ])
@@ -164,16 +175,11 @@ test("opens a subagent card that is not this session's own on its route", async 
       { id: copiedOpenID, title: copiedOpenTitle, created: 1700000003000, parentID: originalID },
     ],
     pageMessages: (id) => ({
-      items:
-        id === parentID
-          ? parentMessages(copiedClosedID, copiedOpenID)
-          : id === childID
-            ? childMessages()
-            : [],
+      items: id === parentID ? parentMessages(copiedClosedID, copiedOpenID) : id === childID ? childMessages() : [],
     }),
     seed: { tabs: [parentID] },
   })
-  const pane = page.getByRole("complementary", { name: "Subagents" })
+  const panel = page.locator("#review-panel")
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
@@ -182,52 +188,47 @@ test("opens a subagent card that is not this session's own on its route", async 
   await resolvedClosed
   await expectPath(page, sessionHref(copiedClosedID))
   await expectSessionTitle(page, copiedClosedTitle)
-  await expect(pane).toHaveCount(0)
+  await expect(page.getByRole("tab", { name: new RegExp(copiedClosedTitle) })).toHaveCount(0)
 
-  // Returning to the parent and opening its own subagent pane keeps that pane open across a copied card's navigation.
+  // Back on the parent, its own subagent opens in a tab from the list, which a copied card's navigation leaves in the
+  // parent's strip.
   await page.goBack()
   await Promise.all([expectPath(page, sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
-  await page.getByRole("button", { name: "Toggle subagents" }).click()
-  await pane.getByRole("listitem").filter({ hasText: childTitle }).getByRole("button").click()
-  await expect(pane.getByText("Child transcript text")).toBeVisible()
+  await page.keyboard.press("Control+Shift+E")
+  await panel.getByRole("tabpanel").getByRole("listitem").filter({ hasText: childTitle }).getByRole("button").click()
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
 
   const resolvedOpen = page.waitForRequest(apiRoute(`/api/session/${copiedOpenID}`))
   await page.locator(`a[href="${sessionHref(copiedOpenID)}"]`).click()
   await resolvedOpen
   await expectPath(page, sessionHref(copiedOpenID))
   await expectSessionTitle(page, copiedOpenTitle)
-  await expect(pane).toBeVisible()
 
   await page.goBack()
   await Promise.all([expectPath(page, sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
-  await expect(pane.getByText("Child transcript text")).toBeVisible()
+  await expect(panel.getByRole("tab", { name: new RegExp(childTitle) })).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
 })
 
-test("toggles the subagent pane from the header and the keyboard", async ({ page }) => {
+test("toggles the subagent list tab from the keyboard", async ({ page }) => {
   await setupPane(page)
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
-  const toggle = page.getByRole("button", { name: "Toggle subagents" })
-  const pane = page.getByRole("complementary", { name: "Subagents" })
-  await expect(pane).toHaveCount(0)
+  const panel = page.locator("#review-panel")
+  const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
+  await expect(listTab).toHaveCount(0)
 
-  await toggle.click()
-  await expect(pane).toBeVisible()
-  await expect(toggle).toHaveAttribute("aria-expanded", "true")
-  await expect(pane.getByRole("listitem")).toHaveCount(2)
-  const childRow = pane.getByRole("listitem").filter({ hasText: childTitle })
+  await page.keyboard.press("Control+Shift+E")
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+  const rows = panel.getByRole("tabpanel").getByRole("listitem")
+  await expect(rows).toHaveCount(2)
+  const childRow = rows.filter({ hasText: childTitle })
   await expect(childRow).toContainText("25%")
   await expect(childRow).toContainText("42s")
 
-  await pane.getByRole("button", { name: "Close subagents" }).click()
-  await expect(pane).toHaveCount(0)
-  await expect(toggle).toHaveAttribute("aria-expanded", "false")
-  await expect(toggle).toBeFocused()
-
-  // The test browser reports Windows, so the app's modifier is Control on every host.
   await page.keyboard.press("Control+Shift+E")
-  await expect(pane).toBeVisible()
+  await expect(listTab).toHaveCount(0)
 })
 
 test("navigates from a running subagent card and hides background controls in the child", async ({ page }) => {
@@ -373,8 +374,8 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await requested.promise
   await openFullSession(page)
   await expect(page).toHaveURL(sessionHref(childID))
-  // The pane started the held load, and the route joins it instead of making its own, so the route's header and its
-  // missing timeline are what show that the load is pending.
+  // The side tab started the held load, and the route joins it instead of making its own, so the route's header and
+  // its missing timeline are what show that the load is pending.
   await Promise.all([
     expect(page.locator("[data-timeline-virtual-content]")).toHaveCount(0),
     expect(page.locator('[data-slot="session-title-parent"]')).toHaveText(parentTitle),
@@ -383,7 +384,8 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await expectSessionTitle(page, taskDescription)
 })
 
-// Desktop opens a subagent card in the pane; a narrow screen has no pane, so the card still opens the session in place.
+// Desktop opens a subagent card in a side tab; a narrow screen has no side region, so the card still opens the session
+// in place.
 test("keeps the parent visible while the child session resolves", async ({ page }) => {
   await page.setViewportSize({ width: 700, height: 900 })
   await setup(page)
@@ -414,7 +416,7 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   await page.goBack()
   await Promise.all([expect(page).toHaveURL(sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
 
-  // Holds only what the route asks for after "Open full session"; the pane's own loads pass.
+  // Holds only what the route asks for after "Open full session"; the side tab's own loads pass.
   let holding = false
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
@@ -430,8 +432,7 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   })
 
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
-  const pane = page.getByRole("complementary", { name: "Subagents" })
-  await expect(pane.getByText("Child transcript text")).toBeVisible()
+  await expect(page.locator("#review-panel").getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
   holding = true
   await openFullSession(page)
   await Promise.all([requested.promise, expect(page).toHaveURL(sessionHref(childID))])
@@ -593,12 +594,9 @@ function titleInlineStart(title: Locator) {
   })
 }
 
-// The card opens its subagent in the pane beside the transcript; the pane's button opens the subagent's own session.
+// The card opens its subagent in a side tab beside the transcript; its button opens the subagent's own session.
 async function openFullSession(page: Page) {
-  await page
-    .getByRole("complementary", { name: "Subagents" })
-    .getByRole("button", { name: "Open full session" })
-    .click()
+  await page.locator("#review-panel").getByRole("button", { name: "Open full session" }).click()
 }
 
 async function openChildFromParent(page: Page) {

@@ -1,5 +1,6 @@
 import {
   batch,
+  createComponent,
   createMemo,
   createEffect,
   createRenderEffect,
@@ -19,8 +20,8 @@ import type {
   LineRange,
   ServerRef,
   MountedSession,
-  SessionScreen,
 } from "@opencode/plugin/gui"
+import type { BuiltinSessionScreen, SessionSubagents } from "@opencode/plugin/gui/builtin"
 import { useComments } from "@/composer/comments"
 import { createComposerEditorActions } from "@/composer/editor/actions"
 import { useComposerState } from "@/composer/persistence"
@@ -63,6 +64,9 @@ export function createMountedSession(session: SessionModel) {
   const [background, setBackground] = createSignal<Accessor<readonly BackgroundTask[]>>()
   // The screen's composer view, created after this object, says whether it takes quotes and focuses its prompt.
   const [prompt, setPrompt] = createSignal<{ quotable: Accessor<boolean>; focus: () => void; focused: () => boolean }>()
+  // The screen's subagents, created after this object with the timeline actions their transcripts use. The side region
+  // lists tabs before then, while panels render after.
+  const [subagents, setSubagents] = createSignal<SessionSubagents>()
 
   const serverRef: ServerRef = {
     get id() {
@@ -342,11 +346,32 @@ export function createMountedSession(session: SessionModel) {
     return view
   }
 
+  const subagentsRef: SessionSubagents = {
+    List: () => {
+      const value = subagents()
+
+      return value ? createComponent(value.List, {}) : undefined
+    },
+    Transcript: (props) => {
+      const value = subagents()
+
+      return value ? createComponent(value.Transcript, props) : undefined
+    },
+    Status: (props) => {
+      const value = subagents()
+
+      return value ? createComponent(value.Status, props) : undefined
+    },
+    title: (id) => subagents()?.title(id),
+    state: (id) => subagents()?.state(id) ?? "pending",
+  }
+
   // One object while this screen is mounted, whichever session it routes: its models follow the route.
-  const screen: SessionScreen = Object.freeze({
+  const screen: BuiltinSessionScreen = Object.freeze({
     file: files,
     comment,
     composer: composerRef,
+    subagents: subagentsRef,
   })
 
   const owner = getOwner()
@@ -394,5 +419,6 @@ export function createMountedSession(session: SessionModel) {
     bindBackground: (tasks: Accessor<readonly BackgroundTask[]>) => setBackground(() => tasks),
     bindPrompt: (value: { quotable: Accessor<boolean>; focus: () => void; focused: () => boolean }) =>
       setPrompt(() => value),
+    bindSubagents: (value: SessionSubagents) => setSubagents(() => value),
   }
 }
