@@ -41,7 +41,8 @@ export function subagentGroups(input: {
         status,
         contextPercent: input.contextPercent?.(info),
         started: info.time.created,
-        ended: status === "running" ? undefined : (input.ended ? input.ended(info) : (info.time.idle ?? info.time.updated)),
+        ended:
+          status === "running" ? undefined : input.ended ? input.ended(info) : (info.time.idle ?? info.time.updated),
       },
       ...(children.get(info.id) ?? [])
         .toSorted((a, b) => a.time.created - b.time.created)

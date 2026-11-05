@@ -189,10 +189,7 @@ test("subagentContextPercent computes context occupancy from the latest assistan
   expect(
     subagentContextPercent(
       session,
-      [
-        ...compacted,
-        step("msg_after", { input: 24_000, output: 6_000, reasoning: 0, cache: { read: 0, write: 0 } }),
-      ],
+      [...compacted, step("msg_after", { input: 24_000, output: 6_000, reasoning: 0, cache: { read: 0, write: 0 } })],
       limit,
     ),
   ).toBe(15)

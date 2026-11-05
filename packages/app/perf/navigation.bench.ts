@@ -199,7 +199,8 @@ export default bench({
       ...fresh,
     },
 
-    // From the subagent card in the source's last turn.
+    // From the subagent card in the source's last turn, which at this width opens the child beside the transcript, in
+    // a side tab.
     "open a child session": {
       primary: "main.work",
       metrics,
@@ -207,7 +208,7 @@ export default bench({
         page.click(
           `a[href="${sessionHref(fixture.childID, prepared.server)}"]:has([data-component="task-tool-card"])`,
           {
-            until: child,
+            until: `#review-panel ${child}`,
           },
         ),
       ...fresh,

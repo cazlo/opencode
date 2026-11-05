@@ -1,4 +1,14 @@
-import { createEffect, createMemo, ErrorBoundary, on, onCleanup, Show, untrack, type Accessor } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  ErrorBoundary,
+  on,
+  onCleanup,
+  Show,
+  untrack,
+  type Accessor,
+} from "solid-js"
 import { createStore } from "solid-js/store"
 import type { MountedSession, SessionScreen } from "@opencode/plugin/gui"
 import type { SessionSubagents } from "@opencode/plugin/gui/builtin"
@@ -21,12 +31,22 @@ import { sessionTitle } from "@/session/title"
 import type { TimelineSessionSource } from "@/session/timeline/controller"
 import { MessageTimeline } from "@/session/timeline/message-timeline"
 import { PluginLinks } from "@/runtime/plugin/render"
+import { enrichLeadingTurn, leadingTurnPageDelay, leadingTurnPageLimit } from "@/session/timeline/model"
+import { createTimelineFollow } from "@/session/timeline/follow"
 import {
-  enrichLeadingTurn,
-  leadingTurnPageDelay,
-  leadingTurnPageLimit,
-  loadOlderTimeline,
-} from "@/session/timeline/model"
+  canRequestFillProbe,
+  canRequestScrollPage,
+  createTimelineHistoryState,
+  DISPOSED_HISTORY_EVENT,
+  FILL_REQUESTED_EVENT,
+  HISTORY_LOAD_TIMEOUT_MS,
+  HISTORY_RETRY_COOLDOWN_MS,
+  HISTORY_SCROLL_THRESHOLD,
+  SCROLL_TOP_EVENT,
+  transitionTimelineHistory,
+  type TimelineHistoryEffect,
+  type TimelineHistoryEvent,
+} from "@/session/timeline/history-machine"
 import { createSubagentGroups, type SessionSubagentsModel } from "./controller"
 import { createSubagentModelLabel } from "./model-label"
 import { SubagentHeader, SubagentList } from "./pane"
@@ -130,19 +150,18 @@ function SubagentTranscript(props: {
   // Queued input that has not been delivered is no transcript: alone it does not count as loaded.
   const ready = () => load.state === "ready" || messages().some((message) => !data.session.input.has(id, message.id))
 
-  const follow = createSubagentTimelineFollow({
-    current: () => current,
+  // Mirrors the routed session's key, so what the timeline stores about this subagent belongs to its own route.
+  const sessionKey = createMemo(() =>
+    SessionStateKey.from(serverSDK.scope, SessionRouteKey.fromRoute(base64Encode(directory()), id)),
+  )
+
+  const interaction = createSubagentTimelineInteraction({
+    sessionKey,
+    sessionID: id,
     ready,
-    count: () => messages().length,
     more,
-    loading,
-    loadOlder: () =>
-      loadOlderTimeline({
-        sessionID: () => id,
-        more,
-        loading,
-        loadMore: (target) => data.session.message.loadMore(target),
-      }),
+    oldest: createMemo(() => messages()[0]?.id),
+    loadMore: (signal) => data.session.message.loadMore(id, { signal }),
   })
 
   // Like the routed timeline's load, a first page that starts mid-turn is completed with the turn's opening prompt.
@@ -180,7 +199,6 @@ function SubagentTranscript(props: {
             () => {
               if (!active) return
               setLoad("state", "ready")
-              follow.fill()
             },
             () => {
               if (active) setLoad("state", "failed")
@@ -205,11 +223,6 @@ function SubagentTranscript(props: {
         if (current) setLoad("stopping", false)
       })
   }
-
-  // Mirrors the routed session's key, so what the timeline stores about this subagent belongs to its own route.
-  const sessionKey = createMemo(() =>
-    SessionStateKey.from(serverSDK.scope, SessionRouteKey.fromRoute(base64Encode(directory()), id)),
-  )
 
   const source: TimelineSessionSource = {
     identity: { params: props.session.identity.params, sessionID: () => id, sessionKey },
@@ -298,18 +311,15 @@ function SubagentTranscript(props: {
                 bottomInset={0}
                 anchor={(messageID) => `subagent-message-${messageID}`}
                 measurementKey={`${server.key}/${id}/subagent-tab`}
-                scroll={follow.scroll}
-                pinned={follow.pinned()}
-                onResumeScroll={follow.resume}
-                setScrollRef={follow.setScrollRef}
-                onScheduleScrollState={follow.scheduleScrollState}
-                onPin={follow.pin}
-                onUnpin={follow.unpin}
-                onUserScroll={follow.markUserScroll}
-                onHistoryScroll={follow.onHistoryScroll}
-                onSelectionInteraction={follow.selectionInteraction}
-                onContentResize={follow.contentResized}
-                setScrollToEnd={follow.setScrollToEnd}
+                scroll={interaction.scroll}
+                onResumeScroll={interaction.resume}
+                setScrollRef={interaction.setScrollRef}
+                onScheduleScrollState={interaction.scheduleScrollState}
+                follow={interaction.follow}
+                onUserScroll={interaction.markUserScroll}
+                onHistoryScroll={interaction.onHistoryScroll}
+                onContentResize={interaction.contentResized}
+                setScrollToEnd={interaction.setScrollToEnd}
               />
             </div>
           </PluginLinks>
@@ -332,32 +342,29 @@ function SubagentTranscript(props: {
   )
 }
 
-// Follows the transcript's end while the reader stays there, and loads older history when they scroll to the top or the
-// loaded page does not fill the pane: a reduced copy of the routed timeline's interaction, which also tracks hashes,
-// reveals and the composer.
-function createSubagentTimelineFollow(input: {
-  current: Accessor<boolean>
+// Follows the transcript's end while the reader stays there, and loads older history when they scroll near the top or
+// the loaded page does not fill the tab: the routed timeline's follow and history machines, without its prompt cursor,
+// hash reveals and composer inset.
+function createSubagentTimelineInteraction(input: {
+  sessionKey: Accessor<string>
+  sessionID: string
   ready: Accessor<boolean>
-  count: Accessor<number>
   more: Accessor<boolean>
-  loading: Accessor<boolean>
-  loadOlder: () => Promise<void>
+  oldest: Accessor<string | undefined>
+  loadMore: (signal: AbortSignal) => Promise<void>
 }) {
-  const [follow, setFollow] = createStore({ pinned: true, scroll: { overflow: false, jump: false } })
+  const [scroll, setScroll] = createStore({ overflow: false, jump: false })
+  const follow = createTimelineFollow(input.sessionKey)
+  const [history, setHistory] = createSignal(createTimelineHistoryState())
   let scroller: HTMLDivElement | undefined
-
   let scrollToEnd = (_behavior?: ScrollBehavior) => {}
 
   let measureFrame: (() => void) | undefined
   let measureTarget: HTMLDivElement | undefined
-  let fillFrame: (() => void) | undefined
-  let continuationFrame: number | undefined
-  let requesting = false
-
-  const unpin = () => {
-    if (!scroller || scroller.scrollHeight - scroller.clientHeight <= 1) return
-    setFollow("pinned", false)
-  }
+  let resumeFrame: (() => void) | undefined
+  let probe: (() => void) | undefined
+  let load: { controller: AbortController; timer: ReturnType<typeof setTimeout> } | undefined
+  let cooldown: ReturnType<typeof setTimeout> | undefined
 
   // Reads in the shared frame loop's read phase, like the routed timeline.
   const scheduleScrollState = (element: HTMLDivElement) => {
@@ -378,95 +385,151 @@ function createSubagentTimelineFollow(input: {
       () => {
         measureFrame = undefined
 
-        if (next && (follow.scroll.overflow !== next.overflow || follow.scroll.jump !== next.jump))
-          setFollow("scroll", next)
+        if (next && (scroll.overflow !== next.overflow || scroll.jump !== next.jump)) setScroll(next)
 
         return false
       },
     )
   }
 
-  const requestOlder = () => {
-    if (requesting || input.loading() || !input.more()) return
-    requesting = true
-    const before = input.count()
-    void input
-      .loadOlder()
-      .catch(() => undefined)
-      .finally(() => {
-        requesting = false
-
-        if (!input.current() || input.count() <= before) return
-
-        if (follow.pinned) {
-          fill()
-
-          return
-        }
-
-        if (scroller && scroller.scrollTop < 200 && input.more() && continuationFrame === undefined) {
-          continuationFrame = requestAnimationFrame(() => {
-            continuationFrame = undefined
-            onHistoryScroll()
-          })
-        }
-      })
+  // Runs inside the virtualizer's ref and resize effects, so it reads untracked: they must not rerun on each phase.
+  const requestFill = () => {
+    if (!canRequestFillProbe(untrack(history)) || !untrack(follow.following)) return
+    dispatch(FILL_REQUESTED_EVENT)
   }
 
-  // A page that does not overflow cannot be scrolled up, so it loads the next older page itself.
-  const fill = () => {
-    if (fillFrame !== undefined) return
-    let short = false
-    fillFrame = frameLoop.addMeasured(
-      () => {
-        short =
-          input.ready() &&
-          follow.pinned &&
-          !requesting &&
-          !input.loading() &&
-          !!scroller &&
-          scroller.scrollHeight <= scroller.clientHeight + 1
-      },
-      () => {
-        fillFrame = undefined
+  function dispatch(event: TimelineHistoryEvent) {
+    untrack(() => {
+      const current = history()
+      const next = transitionTimelineHistory(current, event)
 
-        if (short && input.more()) requestOlder()
-
-        return false
-      },
-    )
+      if (next.state !== current) setHistory(next.state)
+      next.effects.forEach(run)
+    })
   }
 
-  const onHistoryScroll = () => {
-    if (follow.pinned || !scroller || scroller.scrollTop >= 200) return
-    requestOlder()
+  function run(effect: TimelineHistoryEffect) {
+    if (effect.type === "probe.schedule") {
+      probe?.()
+      let more = false
+      probe = frameLoop.addMeasured(
+        () => {
+          more =
+            !!scroller &&
+            (effect.probe === "fill"
+              ? follow.following() && scroller.scrollHeight <= scroller.clientHeight + 1
+              : !follow.following() && scroller.scrollTop < HISTORY_SCROLL_THRESHOLD)
+        },
+        () => {
+          probe = undefined
+          dispatch({ type: "probe.settled", attempt: effect.attempt, load: more })
+
+          return false
+        },
+      )
+
+      return
+    }
+
+    if (effect.type === "probe.cancel") {
+      probe?.()
+      probe = undefined
+
+      return
+    }
+
+    if (effect.type === "load.start") {
+      abortLoad()
+      const previous = input.oldest()
+
+      const page = {
+        controller: new AbortController(),
+        timer: setTimeout(() => dispatch({ type: "page.timed-out", attempt: effect.attempt }), HISTORY_LOAD_TIMEOUT_MS),
+      }
+
+      // Every outcome settles in the machine, which drops a result whose attempt is no longer current.
+      const settle = (event: TimelineHistoryEvent) => {
+        clearTimeout(page.timer)
+
+        if (load === page) load = undefined
+        dispatch(event)
+      }
+
+      load = page
+      input.loadMore(page.controller.signal).then(
+        () =>
+          settle({
+            type: "page.loaded",
+            attempt: effect.attempt,
+            previous,
+            oldest: input.oldest(),
+            more: input.more(),
+            following: follow.following(),
+          }),
+        () => settle({ type: "page.failed", attempt: effect.attempt }),
+      )
+
+      return
+    }
+
+    if (effect.type === "load.abort") {
+      abortLoad()
+
+      return
+    }
+
+    clearTimeout(cooldown)
+    cooldown = undefined
+
+    if (effect.type === "cooldown.cancel") return
+    cooldown = setTimeout(() => {
+      cooldown = undefined
+      dispatch({ type: "cooldown.settled", attempt: effect.attempt, following: follow.following() })
+    }, HISTORY_RETRY_COOLDOWN_MS)
   }
 
-  createEffect(
-    on(
-      () => [input.ready(), follow.pinned] as const,
-      ([ready, pinned]) => {
-        if (ready && pinned) fill()
-      },
-    ),
+  function abortLoad() {
+    if (!load) return
+    clearTimeout(load.timer)
+    load.controller.abort()
+    load = undefined
+  }
+
+  createEffect(() =>
+    dispatch({
+      type: "sync",
+      target: { sessionKey: input.sessionKey(), sessionID: input.sessionID },
+      ready: input.ready(),
+      more: input.more(),
+      following: follow.following(),
+      oldest: input.oldest(),
+    }),
   )
 
   onCleanup(() => {
+    dispatch(DISPOSED_HISTORY_EVENT)
+    resumeFrame?.()
     measureFrame?.()
-    fillFrame?.()
-
-    if (continuationFrame !== undefined) cancelAnimationFrame(continuationFrame)
   })
 
   return {
-    scroll: follow.scroll,
-    pinned: () => follow.pinned,
-    pin: () => setFollow("pinned", true),
-    unpin,
-    fill,
+    scroll,
+    follow,
+    scheduleScrollState,
+    // Scrolls on the next frame, as the routed timeline does; input that stops following meanwhile drops the attempt.
     resume: (behavior?: ScrollBehavior) => {
-      setFollow("pinned", true)
-      scrollToEnd(behavior)
+      const attempt = follow.beginReturn()
+
+      resumeFrame?.()
+      resumeFrame = frameLoop.add(() => {
+        resumeFrame = undefined
+        const before = follow.peek()
+        follow.dispatch({ type: "return.run", attempt })
+
+        if (follow.peek() !== before) scrollToEnd(behavior)
+
+        return false
+      })
 
       if (scroller) scheduleScrollState(scroller)
     },
@@ -475,21 +538,26 @@ function createSubagentTimelineFollow(input: {
 
       if (!element) return
       scheduleScrollState(element)
-      fill()
+      requestFill()
     },
-    setScrollToEnd: (scroll: (behavior?: ScrollBehavior) => void) => {
-      scrollToEnd = scroll
+    setScrollToEnd: (scrollTo: (behavior?: ScrollBehavior) => void) => {
+      scrollToEnd = scrollTo
     },
-    scheduleScrollState,
     contentResized: () => {
-      if (!scroller) return
-      scheduleScrollState(scroller)
-      fill()
+      if (scroller) scheduleScrollState(scroller)
+      requestFill()
     },
+    // The routed timeline uses gestures to drop its prompt cursor, which this view has none of.
     markUserScroll: () => {},
-    selectionInteraction: () => {
-      if (window.getSelection()?.toString()) unpin()
+    onHistoryScroll: () => {
+      if (
+        !scroller ||
+        scroller.scrollTop >= HISTORY_SCROLL_THRESHOLD ||
+        !canRequestScrollPage(untrack(history)) ||
+        untrack(follow.following)
+      )
+        return
+      dispatch(SCROLL_TOP_EVENT)
     },
-    onHistoryScroll,
   }
 }
