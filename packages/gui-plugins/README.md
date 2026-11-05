@@ -316,15 +316,16 @@ to the displayed repository or worktree instead of adding a second menu item.
 
 `@opencode/plugin/gui/builtin` holds what only the built-ins use. It is never published and is not in the modules a plugin bundle may require; a public SDK module never imports it.
 
-| Export                                                  | What it adds                                                                                   |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `onIdle(fn)`                                            | Runs work while the main thread is idle, e.g. a lazy chunk's preload                           |
-| `BuiltinPanel`, `BuiltinPanelTab`                       | `legacy` stored keys of a panel; `first` and stable `dom` ids of a tab                         |
-| `BuiltinCommand`                                        | `follows`: share another command's shortcut inside `scope`                                     |
-| `BuiltinStore`, `BuiltinStoreFrom`                      | Window stores imported from parts of the app's own keys                                        |
-| `builtinContext(ctx)`                                   | `ctx.desktop.forceFocus`, `ctx.locale.setDirection`                                            |
-| `builtinMainContext(ctx)`, `MainStoreFrom`, `Lifecycle` | Main stores imported from settings files or other namespaces, and `lifecycle.restart(handoff)` |
-| `builtinCatalog(catalog)`, `BuiltinCatalog`             | Locales other than English as loaders, loaded when the user picks the locale                   |
+| Export                                                              | What it adds                                                                                          |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `onIdle(fn)`                                                        | Runs work while the main thread is idle, e.g. a lazy chunk's preload                                  |
+| `BuiltinPanel`, `BuiltinPanelTab`                                   | `legacy` stored keys and `subagent` of a panel; `first` and stable `dom` ids of a tab                 |
+| `BuiltinCommand`                                                    | `follows`: share another command's shortcut inside `scope`                                            |
+| `BuiltinStore`, `BuiltinStoreFrom`                                  | Window stores imported from parts of the app's own keys                                               |
+| `builtinScreen(screen)`, `BuiltinSessionScreen`, `SessionSubagents` | The session screen's `subagents`: their list, and each one's transcript, status mark, title and state |
+| `builtinContext(ctx)`                                               | `ctx.desktop.forceFocus`, `ctx.locale.setDirection`                                                   |
+| `builtinMainContext(ctx)`, `MainStoreFrom`, `Lifecycle`             | Main stores imported from settings files or other namespaces, and `lifecycle.restart(handoff)`        |
+| `builtinCatalog(catalog)`, `BuiltinCatalog`                         | Locales other than English as loaders, loaded when the user picks the locale                          |
 
 Each registry token has the same id as the public one, so the host reads every item through it. The host builds every context with the built-in members; `builtinContext` and `builtinMainContext` only type them. A plugin bundle's catalog holds every locale inline, and the host rejects a bundle whose catalog has a loader.
 

@@ -231,6 +231,28 @@ test("toggles the subagent list tab from the keyboard", async ({ page }) => {
   await expect(listTab).toHaveCount(0)
 })
 
+test("restores subagent tabs after a reload before their info loads", async ({ page }) => {
+  // The session list leaves the child out, so after the reload its tab waits for the child's info to load.
+  await setup(page)
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+  await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+  const panel = page.locator("#review-panel")
+  const childTab = panel.getByRole("tab", { name: new RegExp(childTitle) })
+  const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
+  await expect(childTab).toHaveAttribute("aria-selected", "true")
+  await page.keyboard.press("Control+Shift+E")
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+
+  // The unselected child tab renders nothing that would load its info, so its tab loads it.
+  await page.reload()
+  await expectSessionTitle(page, parentTitle)
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+  await expect(childTab).toBeVisible()
+  await childTab.click()
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+})
+
 test("navigates from a running subagent card and hides background controls in the child", async ({ page }) => {
   const runningChildID = "ses_running_child"
   await setupTimeline(page, {

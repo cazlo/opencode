@@ -22,7 +22,7 @@ export function SubagentBar(props: {
   ended?: number
   stopping?: boolean
   onStop?: () => void
-  /** Without it the bar has no way back, as in the subagent pane. */
+  /** Without it the bar has no way back, as in a subagent's side tab. */
   onBack?: () => void
 }) {
   const language = useLanguage()

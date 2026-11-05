@@ -99,7 +99,7 @@ type MessageTimelineProps = {
   setPage?: (fn: (direction: 1 | -1) => void) => void
   reveal?: { target: () => string | undefined; done: () => void }
   search?: JSX.Element
-  /** Keys the virtualizer's saved measurements; a pane showing the session at another width keeps its own. */
+  /** Keys the virtualizer's saved measurements; a side tab showing the session at another width keeps its own. */
   measurementKey?: string
 }
 
