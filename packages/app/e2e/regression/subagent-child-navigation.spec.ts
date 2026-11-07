@@ -108,6 +108,10 @@ test("opens a subagent card in a side tab beside the transcript", async ({ page 
   await panel.getByRole("button", { name: /^Subagents/ }).click()
   const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
   await expect(listTab).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tabpanel").getByRole("heading", { level: 3 })).toHaveText([
+    "Running (1)",
+    "Completed (1)",
+  ])
   const rows = panel.getByRole("tabpanel").getByRole("listitem")
   await expect(rows).toHaveText([new RegExp(runningChildTitle), new RegExp(childTitle)])
 
@@ -152,7 +156,9 @@ test("lists a finished subagent's own subagents before it is opened", async ({ p
 
   // The test browser reports Windows, so the app's modifier is Control on every host.
   await page.keyboard.press("Control+Shift+E")
-  await expect(page.locator("#review-panel").getByRole("tabpanel").getByRole("listitem")).toHaveText([
+  const tabpanel = page.locator("#review-panel").getByRole("tabpanel")
+  await expect(tabpanel.getByRole("heading", { level: 3 })).toHaveText(["Completed (2)"])
+  await expect(tabpanel.getByRole("listitem")).toHaveText([
     new RegExp(childTitle),
     new RegExp(grandchildTitle),
   ])

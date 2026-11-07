@@ -55,8 +55,14 @@ export function SubagentList(props: {
 
   const sections = () =>
     [
-      { title: language.t("session.subagents.running"), rows: props.groups.running },
-      { title: language.t("session.subagents.completed"), rows: props.groups.completed },
+      {
+        title: language.plural("session.subagents.running", props.groups.running.length),
+        rows: props.groups.running,
+      },
+      {
+        title: language.plural("session.subagents.completed", props.groups.completed.length),
+        rows: props.groups.completed,
+      },
     ] as const
 
   return (
@@ -74,7 +80,7 @@ export function SubagentList(props: {
           {(section) => (
             <Show when={section.rows.length > 0}>
               <section>
-                <h3 class="px-2 pb-1 pt-3 text-[12px] font-medium leading-[var(--line-height-compact)] text-v2-text-text-faint">
+                <h3 class="px-2 pb-1 pt-3 text-[12px] font-medium leading-[var(--line-height-compact)] tabular-nums text-v2-text-text-faint">
                   {section.title}
                 </h3>
                 <ul>
