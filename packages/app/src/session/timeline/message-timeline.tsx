@@ -21,6 +21,7 @@ import { Timeline } from "@opencode/session-ui/timeline/projection"
 import { createSessionTimelineRowRenderer } from "@opencode/session-ui/timeline/row"
 import { getReadyMarkdown, preloadMarkdown } from "@opencode/session-ui/markdown-cache"
 import { createTimelineController, type TimelineController, type TimelineSessionSource } from "./controller"
+import type { TimelineFollow } from "./follow"
 import { createTimelineVirtualizer } from "./virtualizer"
 import { createSelectedEffect } from "./selected-effect"
 import { containsDirectory } from "@opencode/util/path"
@@ -83,12 +84,9 @@ type MessageTimelineProps = {
   onResumeScroll: (behavior?: ScrollBehavior) => void
   setScrollRef: (el: HTMLDivElement | undefined) => void
   onScheduleScrollState: (el: HTMLDivElement) => void
-  onPin: () => void
-  onUnpin: () => void
+  follow: TimelineFollow
   onUserScroll: (target?: EventTarget | null) => void
   onHistoryScroll: () => void
-  onSelectionInteraction: (event: MouseEvent) => void
-  pinned: boolean
   centered: boolean
   reserveReviewToggle: boolean
   onContentResize: () => void
@@ -101,11 +99,13 @@ type MessageTimelineProps = {
   setPage?: (fn: (direction: 1 | -1) => void) => void
   reveal?: { target: () => string | undefined; done: () => void }
   search?: JSX.Element
+  /** Keys the virtualizer's saved measurements; a side tab showing the session at another width keeps its own. */
+  measurementKey?: string
 }
 
 export function MessageTimeline(props: MessageTimelineProps) {
   const controller = createTimelineController({ session: props.session, active: () => props.active !== false })
-  const tail = props.pinned ? controller.data.projection.rows().at(-1) : undefined
+  const tail = props.follow.following() ? controller.data.projection.rows().at(-1) : undefined
 
   if (tail?._tag === "AssistantPart" && tail.group.type === "part") {
     const message = controller.data.projection.messageByID().get(tail.group.ref.messageID)
@@ -180,16 +180,15 @@ function MessageTimelineView(
   )
   const turnPadding = () => "px-4 md:px-6"
   const showHeader = createMemo(() => !props.hideHeader && (props.data.showHeader() || workspaceSession()))
-  const pinned = createMemo(() => props.pinned)
   const messageByID = projection.messageByID
 
   const virtualized = createTimelineVirtualizer({
     active: () => props.active !== false,
-    sessionKey: () => `${server.key}/${props.data.sessionID()}`,
+    sessionKey: () => props.measurementKey ?? `${server.key}/${props.data.sessionID()}`,
     presentationKey: () => JSON.stringify(props.data.timelineDetail()),
     projection,
     showHeader,
-    pinned,
+    follow: props.follow,
     scroll: () => props.scroll,
     onResumeScroll: props.onResumeScroll,
     setScrollRef: props.setScrollRef,
@@ -197,9 +196,6 @@ function MessageTimelineView(
     bottomInset: () => props.bottomInset ?? 0,
     setVisibleRef: props.setVisibleRef,
     onScheduleScrollState: props.onScheduleScrollState,
-    onPin: props.onPin,
-    onUnpin: props.onUnpin,
-    onSelectionInteraction: props.onSelectionInteraction,
     onUserScroll: props.onUserScroll,
     onHistoryScroll: props.onHistoryScroll,
     canRenderImmediately: (row, disclosure) => {

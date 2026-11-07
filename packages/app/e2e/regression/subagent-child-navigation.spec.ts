@@ -1,7 +1,7 @@
 import type { OpenCodeEvent, SessionMessageInfo } from "@opencode/client/promise"
 import { timelinePresets } from "@opencode/session-ui/timeline/detail"
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { expectPath, SERVER, sessionHref } from "../utils/app"
+import { expectPath, provider, SERVER, sessionHref } from "../utils/app"
 import { currentSession } from "../utils/mock-server"
 import { assistantMessage, session, sessionID, setupTimeline, textPart, userMessage } from "../utils/timeline"
 import { expectSessionTitle } from "../utils/waits"
@@ -11,11 +11,15 @@ const directory = "C:/OpenCode/SubagentNavigation"
 
 const projectID = "proj_subagentnavigation"
 
-const serverPort = new URL(SERVER).port
+const serverOrigin = SERVER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+const apiRoute = (path: string) => new RegExp(`^${serverOrigin}${path}(\\?|$)`)
 
 const parentID = "ses_subagent_parent"
 
 const childID = "ses_subagent_child"
+
+const runningChildID = "ses_subagent_running"
 
 const grandchildID = "ses_subagent_grandchild"
 
@@ -24,6 +28,8 @@ const greatGrandchildID = "ses_subagent_great_grandchild"
 const parentTitle = "Parent session"
 
 const childTitle = "Subagent child session"
+
+const runningChildTitle = "Running subagent session"
 
 const grandchildTitle = "Nested subagent session"
 
@@ -61,9 +67,13 @@ test("keeps the parent title anchored when opening a subagent", async ({ page })
     // Measuring before then can read the detached heading, whose empty bounds put the start at 0.
     const card = page.locator(`a[href="${sessionHref(childID)}"]`)
     await expect(card).toBeVisible()
-    const start = await titleInlineStart(page.locator("[data-session-title]").getByRole("heading", { name: parentTitle }))
+
+    const start = await titleInlineStart(
+      page.locator("[data-session-title]").getByRole("heading", { name: parentTitle }),
+    )
 
     await card.click()
+    await openFullSession(page)
     await expectSessionTitle(page, taskDescription)
 
     const breadcrumb = page.locator('[data-slot="session-title-parent"]')
@@ -76,6 +86,177 @@ test("keeps the parent title anchored when opening a subagent", async ({ page })
       .poll(() => titleInlineStart(page.locator("[data-session-title]").getByRole("heading", { name: parentTitle })))
       .toBeCloseTo(start, 0)
   }
+})
+
+test("opens a subagent card in a side tab beside the transcript", async ({ page }) => {
+  await setupPane(page)
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+
+  // The main transcript stays where it is; the subagent's own transcript shows in a side tab.
+  await expectPath(page, sessionHref(parentID))
+  await expect(page.getByRole("heading", { name: parentTitle })).toBeVisible()
+  const panel = page.locator("#review-panel")
+  const childTab = panel.getByRole("tab", { name: new RegExp(childTitle) })
+  await expect(childTab).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+
+  // The New tab view offers the list of subagents, the running one before the finished one.
+  await panel.getByRole("button", { name: "Add tab", exact: true }).click()
+  await panel.getByRole("button", { name: /^Subagents/ }).click()
+  const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tabpanel").getByRole("heading", { level: 3 })).toHaveText([
+    "Running (1)",
+    "Completed (1)",
+  ])
+  const rows = panel.getByRole("tabpanel").getByRole("listitem")
+  await expect(rows).toHaveText([new RegExp(runningChildTitle), new RegExp(childTitle)])
+
+  // Each subagent opens in a tab of its own.
+  await rows.filter({ hasText: runningChildTitle }).getByRole("button").click()
+  await expect(panel.getByRole("tab", { name: new RegExp(runningChildTitle) })).toHaveAttribute("aria-selected", "true")
+  const interrupt = panel.getByRole("button", { name: "Interrupt subagent" })
+  await expect(interrupt).toBeVisible()
+
+  const interrupted = page.waitForRequest(
+    (req) => req.method() === "POST" && apiRoute(`/api/session/${runningChildID}/interrupt`).test(req.url()),
+  )
+
+  await interrupt.click()
+  await interrupted
+
+  // A subagent that already has a tab selects it rather than opening another.
+  await listTab.click()
+  await rows.filter({ hasText: childTitle }).getByRole("button").click()
+  await expect(childTab).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tab", { name: new RegExp(childTitle) })).toHaveCount(1)
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+
+  await panel.getByRole("button", { name: "Open full session" }).click()
+  await expectPath(page, sessionHref(childID))
+  await expectSessionTitle(page, taskDescription)
+})
+
+test("lists a finished subagent's own subagents before it is opened", async ({ page }) => {
+  await mockWorkspace(page, {
+    name: "SubagentNavigation",
+    sessions: [
+      { id: parentID, title: parentTitle, created: 1700000000000 },
+      { id: childID, title: childTitle, created: 1700000001000, parentID },
+      { id: grandchildID, title: grandchildTitle, created: 1700000002000, parentID: childID },
+    ],
+    pageMessages: (id) => ({ items: id === parentID ? parentMessages() : [] }),
+    seed: { tabs: [parentID] },
+  })
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  // The test browser reports Windows, so the app's modifier is Control on every host.
+  await page.keyboard.press("Control+Shift+E")
+  const tabpanel = page.locator("#review-panel").getByRole("tabpanel")
+  await expect(tabpanel.getByRole("heading", { level: 3 })).toHaveText(["Completed (2)"])
+  await expect(tabpanel.getByRole("listitem")).toHaveText([
+    new RegExp(childTitle),
+    new RegExp(grandchildTitle),
+  ])
+})
+
+test("opens a subagent card that is not this session's own on its route", async ({ page }) => {
+  // A fork copies its original's cards, whose subagents belong to the original and resolve by ID on click.
+  const originalID = "ses_subagent_original"
+  const copiedClosedID = "ses_subagent_copied_closed"
+  const copiedOpenID = "ses_subagent_copied_open"
+  const copiedClosedTitle = "Copied subagent session"
+  const copiedOpenTitle = "Second copied subagent session"
+  await mockWorkspace(page, {
+    name: "SubagentNavigation",
+    sessions: [
+      { id: parentID, title: parentTitle, created: 1700000000000 },
+      { id: childID, title: childTitle, created: 1700000000500, parentID },
+      { id: originalID, title: "Original session", created: 1700000001000 },
+      { id: copiedClosedID, title: copiedClosedTitle, created: 1700000002000, parentID: originalID },
+      { id: copiedOpenID, title: copiedOpenTitle, created: 1700000003000, parentID: originalID },
+    ],
+    pageMessages: (id) => ({
+      items: id === parentID ? parentMessages(copiedClosedID, copiedOpenID) : id === childID ? childMessages() : [],
+    }),
+    seed: { tabs: [parentID] },
+  })
+  const panel = page.locator("#review-panel")
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  const resolvedClosed = page.waitForRequest(apiRoute(`/api/session/${copiedClosedID}`))
+  await page.locator(`a[href="${sessionHref(copiedClosedID)}"]`).click()
+  await resolvedClosed
+  await expectPath(page, sessionHref(copiedClosedID))
+  await expectSessionTitle(page, copiedClosedTitle)
+  await expect(page.getByRole("tab", { name: new RegExp(copiedClosedTitle) })).toHaveCount(0)
+
+  // Back on the parent, its own subagent opens in a tab from the list, which a copied card's navigation leaves in the
+  // parent's strip.
+  await page.goBack()
+  await Promise.all([expectPath(page, sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
+  await page.keyboard.press("Control+Shift+E")
+  await panel.getByRole("tabpanel").getByRole("listitem").filter({ hasText: childTitle }).getByRole("button").click()
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+
+  const resolvedOpen = page.waitForRequest(apiRoute(`/api/session/${copiedOpenID}`))
+  await page.locator(`a[href="${sessionHref(copiedOpenID)}"]`).click()
+  await resolvedOpen
+  await expectPath(page, sessionHref(copiedOpenID))
+  await expectSessionTitle(page, copiedOpenTitle)
+
+  await page.goBack()
+  await Promise.all([expectPath(page, sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
+  await expect(panel.getByRole("tab", { name: new RegExp(childTitle) })).toHaveAttribute("aria-selected", "true")
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+})
+
+test("toggles the subagent list tab from the keyboard", async ({ page }) => {
+  await setupPane(page)
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+
+  const panel = page.locator("#review-panel")
+  const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
+  await expect(listTab).toHaveCount(0)
+
+  await page.keyboard.press("Control+Shift+E")
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+  const rows = panel.getByRole("tabpanel").getByRole("listitem")
+  await expect(rows).toHaveCount(2)
+  const childRow = rows.filter({ hasText: childTitle })
+  await expect(childRow).toContainText("25%")
+  await expect(childRow).toContainText("42s")
+
+  await page.keyboard.press("Control+Shift+E")
+  await expect(listTab).toHaveCount(0)
+})
+
+test("restores subagent tabs after a reload before their info loads", async ({ page }) => {
+  // The session list leaves the child out, so after the reload its tab waits for the child's info to load.
+  await setup(page)
+  await page.goto(sessionHref(parentID))
+  await expectSessionTitle(page, parentTitle)
+  await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+  const panel = page.locator("#review-panel")
+  const childTab = panel.getByRole("tab", { name: new RegExp(childTitle) })
+  const listTab = panel.getByRole("tab", { name: "Subagents", exact: true })
+  await expect(childTab).toHaveAttribute("aria-selected", "true")
+  await page.keyboard.press("Control+Shift+E")
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+
+  // The unselected child tab renders nothing that would load its info, so its tab loads it.
+  await page.reload()
+  await expectSessionTitle(page, parentTitle)
+  await expect(listTab).toHaveAttribute("aria-selected", "true")
+  await expect(childTab).toBeVisible()
+  await childTab.click()
+  await expect(panel.getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
 })
 
 test("navigates from a running subagent card and hides background controls in the child", async ({ page }) => {
@@ -111,6 +292,7 @@ test("navigates from a running subagent card and hides background controls in th
   const hint = page.getByRole("button", { name: /move running work to the background/i })
   await expect(hint).toBeVisible()
   await page.locator('[data-component="task-tool-card"]').click()
+  await openFullSession(page)
   await expect(page).toHaveURL(new RegExp(`/session/${runningChildID}$`))
   await expect(hint).toHaveCount(0)
 })
@@ -208,38 +390,40 @@ test("shows parent lineage while the child timeline loads", async ({ page }) => 
   await setup(page)
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  await page.route(
-    (url) => url.pathname === `/api/session/${childID}/message` && url.port === serverPort,
-    async (route) => {
-      requested.resolve()
-      await release.promise
-      await route.fallback()
-    },
-  )
+  await page.route(apiRoute(`/api/session/${childID}/message`), async (route) => {
+    requested.resolve()
+    await release.promise
+    await route.fallback()
+  })
 
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
-  await Promise.all([requested.promise, expect(page).toHaveURL(sessionHref(childID))])
+  await requested.promise
+  await openFullSession(page)
+  await expect(page).toHaveURL(sessionHref(childID))
+  // The side tab started the held load, and the route joins it instead of making its own, so the route's header and
+  // its missing timeline are what show that the load is pending.
   await Promise.all([
+    expect(page.locator("[data-timeline-virtual-content]")).toHaveCount(0),
     expect(page.locator('[data-slot="session-title-parent"]')).toHaveText(parentTitle),
     expect(page.locator('[data-slot="session-title-child"]')).toHaveText(childTitle),
   ]).finally(() => release.resolve())
   await expectSessionTitle(page, taskDescription)
 })
 
+// Desktop opens a subagent card in a side tab; a narrow screen has no side region, so the card still opens the session
+// in place.
 test("keeps the parent visible while the child session resolves", async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 900 })
   await setup(page)
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  await page.route(
-    (url) => url.pathname === `/api/session/${childID}` && url.port === serverPort,
-    async (route) => {
-      requested.resolve()
-      await release.promise
-      await route.fallback()
-    },
-  )
+  await page.route(apiRoute(`/api/session/${childID}`), async (route) => {
+    requested.resolve()
+    await release.promise
+    await route.fallback()
+  })
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
 
@@ -249,7 +433,8 @@ test("keeps the parent visible while the child session resolves", async ({ page 
     () => release.resolve(),
   )
 
-  await expectSessionTitle(page, taskDescription)
+  // A narrow screen has no timeline header, so its tab names the session by its own title.
+  await expectSessionTitle(page, childTitle)
 })
 
 test("keeps the parent tab selected while a loaded child session resolves", async ({ page }) => {
@@ -259,22 +444,25 @@ test("keeps the parent tab selected while a loaded child session resolves", asyn
   await page.goBack()
   await Promise.all([expect(page).toHaveURL(sessionHref(parentID)), expectSessionTitle(page, parentTitle)])
 
+  // Holds only what the route asks for after "Open full session"; the side tab's own loads pass.
+  let holding = false
   const requested = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  await page.route(
-    (url) => url.pathname === `/api/session/${childID}` && url.port === serverPort,
-    async (route) => {
-      requested.resolve()
-      await release.promise
-      await route.fallback()
-    },
-  )
+  await page.route(apiRoute(`/api/session/${childID}`), async (route) => {
+    if (!holding) return route.fallback()
+    requested.resolve()
+    await release.promise
+    await route.fallback()
+  })
 
   const parentTab = page.locator("[data-titlebar-tab-slot]", {
     has: page.locator('[data-slot="tab-title"]', { hasText: parentTitle }),
   })
 
   await page.locator(`a[href="${sessionHref(childID)}"]`).click()
+  await expect(page.locator("#review-panel").getByRole("tabpanel").getByText("Child transcript text")).toBeVisible()
+  holding = true
+  await openFullSession(page)
   await Promise.all([requested.promise, expect(page).toHaveURL(sessionHref(childID))])
   await Promise.all([
     expect(parentTab).toHaveAttribute("data-active", "true"),
@@ -366,36 +554,60 @@ async function setup(page: Page, events?: () => OpenCodeEvent[], nestedDepth: 0 
         ? [{ id: greatGrandchildID, title: greatGrandchildTitle, created: 1700000003000, parentID: grandchildID }]
         : []),
     ],
-    pageMessages: (sessionID) => ({ items: sessionID === parentID ? parentMessages() : [] }),
+    pageMessages: (sessionID) => ({
+      items: sessionID === parentID ? parentMessages() : sessionID === childID ? childMessages() : [],
+    }),
     events,
     eventRetry: events ? 16 : undefined,
     seed: { tabs: [parentID] },
   })
   // The child session resolves by ID but is absent from the session list,
   // matching a subagent session that has not been loaded into the list cache yet.
-  await page.route(
-    (url) => url.pathname === "/api/session" && url.port === serverPort,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        headers: { "access-control-allow-origin": "*" },
-        body: JSON.stringify({
-          data: [
-            currentSession({
-              id: parentID,
-              slug: parentID,
-              projectID,
-              directory,
-              title: parentTitle,
-              version: "dev",
-              time: { created: 1700000000000, updated: 1700000000000 },
-            }),
-          ],
-          cursor: {},
-        }),
+  await page.route(apiRoute("/api/session"), (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        data: [
+          currentSession({
+            id: parentID,
+            slug: parentID,
+            projectID,
+            directory,
+            title: parentTitle,
+            version: "dev",
+            time: { created: 1700000000000, updated: 1700000000000 },
+          }),
+        ],
+        cursor: {},
       }),
+    }),
   )
+}
+
+// A parent with a finished subagent whose transcript has text, and one still running.
+async function setupPane(page: Page) {
+  await mockWorkspace(page, {
+    name: "SubagentNavigation",
+    provider: provider({ id: "claude-opus-4-6", name: "Claude Opus 4.6", limit: { context: 200_000 } }),
+    sessions: [
+      { id: parentID, title: parentTitle, created: 1700000000000 },
+      {
+        id: childID,
+        title: childTitle,
+        created: 1700000001000,
+        time: { created: 1700000001000, updated: 1700000043000, idle: 1700000043000 },
+        parentID,
+      },
+      { id: runningChildID, title: runningChildTitle, created: 1700000002000, parentID },
+    ],
+    sessionStatus: { [runningChildID]: { type: "busy" } },
+    pageMessages: (id) => ({
+      items: id === parentID ? parentMessages() : id === childID ? childMessages() : [],
+    }),
+    seed: { tabs: [parentID] },
+  })
 }
 
 function titleInlineStart(title: Locator) {
@@ -410,6 +622,11 @@ function titleInlineStart(title: Locator) {
   })
 }
 
+// The card opens its subagent in a side tab beside the transcript; its button opens the subagent's own session.
+async function openFullSession(page: Page) {
+  await page.locator("#review-panel").getByRole("button", { name: "Open full session" }).click()
+}
+
 async function openChildFromParent(page: Page) {
   await page.goto(sessionHref(parentID))
   await expectSessionTitle(page, parentTitle)
@@ -417,13 +634,30 @@ async function openChildFromParent(page: Page) {
   const card = page.locator(`a[href="${sessionHref(childID)}"]`)
   await expect(card).toBeVisible()
   await card.click()
+  await openFullSession(page)
 
   await expect(page).toHaveURL(new RegExp(`/server/.+/session/${childID}$`), { timeout: 15_000 })
 }
 
-function parentMessages(): SessionMessageInfo[] {
+function childMessages(): SessionMessageInfo[] {
+  const userID = "msg_child_user"
+
+  return [
+    userMessage(undefined, { id: userID }),
+    {
+      ...assistantMessage([textPart("prt_child_text", "Child transcript text")], {
+        id: "msg_child_assistant",
+        parentID: userID,
+      }),
+      tokens: { input: 38_000, output: 12_000, reasoning: 0, cache: { read: 0, write: 0 } },
+    },
+  ]
+}
+
+function parentMessages(...subagentIDs: string[]): SessionMessageInfo[] {
   const userID = "msg_user_0001"
   const assistantID = "msg_assistant_0001"
+  const ids = subagentIDs.length > 0 ? subagentIDs : [childID]
 
   return [
     {
@@ -441,20 +675,22 @@ function parentMessages(): SessionMessageInfo[] {
       cost: 0.01,
       tokens: { input: 100, output: 200, reasoning: 0, cache: { read: 0, write: 0 } },
       finish: "stop",
-      content: [
-        {
-          type: "tool",
-          id: "call_subagent_0001",
-          name: "subagent",
-          time: { created: 1700000001000, ran: 1700000001000, completed: 1700000002000 },
-          state: {
-            status: "completed",
-            input: { description: taskDescription, agent: "explore", prompt: "Inspect the delegated work." },
-            content: [{ type: "text", text: "Subagent finished" }],
-            metadata: { sessionID: childID },
-          },
+      content: ids.map((subagentID, index) => ({
+        type: "tool" as const,
+        id: `call_subagent_${String(index + 1).padStart(4, "0")}`,
+        name: "subagent",
+        time: {
+          created: 1700000001000 + index,
+          ran: 1700000001000 + index,
+          completed: 1700000002000 + index,
         },
-      ],
+        state: {
+          status: "completed" as const,
+          input: { description: taskDescription, agent: "explore", prompt: "Inspect the delegated work." },
+          content: [{ type: "text" as const, text: "Subagent finished" }],
+          metadata: { sessionID: subagentID },
+        },
+      })),
     },
   ]
 }

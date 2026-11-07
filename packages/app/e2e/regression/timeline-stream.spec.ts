@@ -637,7 +637,9 @@ test("shows a background subagent's outcome as its own row where it finished", a
   await expect(notice).toHaveAttribute("data-outcome", "completed")
 
   await expect(notice.locator('[data-slot="icon-svg"]')).toHaveCount(0)
+  // A side tab beside the transcript takes the click; its button opens the subagent's own session.
   await notice.click()
+  await page.locator("#review-panel").getByRole("button", { name: "Open full session" }).click()
   await expect(page).toHaveURL(new RegExp(`/session/${childID}$`))
 })
 
@@ -1155,7 +1157,7 @@ test.describe("background shortcut", () => {
       const capsule = page.getByRole("button", { name: "1 shell", exact: true, includeHidden: true })
       const list = page.getByRole("menu", { name: "1 shell", exact: true })
       const closed = (await capsule.boundingBox())!
-      const inset = (await capsule.locator("svg").boundingBox())!.x - closed.x
+      const inset = (await capsule.locator('[data-component="session-progress-indicator-v2"]').boundingBox())!.x - closed.x
 
       await capsule.click()
       // Right placement shares the capsule's end edge and mirrors its inset there; centre placement shares its centre.
@@ -1336,7 +1338,7 @@ test.describe("background shortcut", () => {
     // The open menu hides the rest of the page from the accessibility tree, the capsule included.
     const capsule = page.getByRole("button", { name: "2 subagents · 1 shell", exact: true, includeHidden: true })
     const label = capsule.getByText("2 subagents · 1 shell", { exact: true })
-    const glyph = await capsule.locator("svg").boundingBox()
+    const glyph = await capsule.locator('[data-component="session-progress-indicator-v2"]').boundingBox()
     const text = await label.boundingBox()
     const inset = glyph!.x - (await capsule.boundingBox())!.x
 
@@ -1357,7 +1359,7 @@ test.describe("background shortcut", () => {
             const content = item.querySelector('[data-slot="menu-v2-item-content"]')
 
             return [
-              content?.querySelector(":scope > svg")?.getBoundingClientRect().left ?? NaN,
+              content?.querySelector(":scope > :first-child")?.getBoundingClientRect().left ?? NaN,
               content?.querySelector(":scope > span:not([data-slot])")?.getBoundingClientRect().left ?? NaN,
               item.querySelector('[data-slot="session-activity-elapsed"]')?.getBoundingClientRect().right ?? NaN,
             ]
@@ -1512,6 +1514,8 @@ test.describe("background shortcut", () => {
 
     await page.getByRole("button", { name: "1 subagent", exact: true }).click()
     await page.getByRole("menuitem", { name: /Only running task/ }).click()
+    // A side tab beside the transcript takes the menu's pick; its button opens the subagent's own session.
+    await page.locator("#review-panel").getByRole("button", { name: "Open full session" }).click()
     await expect(page).toHaveURL(new RegExp(`/session/${childID}$`))
     await expect(header.getByRole("heading")).toHaveText("Only running task")
 

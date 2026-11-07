@@ -4,7 +4,7 @@
 import type { Schema } from "effect"
 import type { Context } from "./context.js"
 import { Registry, type Catalog, type Messages, type Persisted, type StoreDeclaration, type StoreFrom } from "./core.js"
-import type { Desktop, Layout, Locale, StorageScope, StoreOptions } from "./host-apis.js"
+import type { Desktop, Layout, Locale, MountedSession, SessionScreen, StorageScope, StoreOptions } from "./host-apis.js"
 import type { MainContext } from "./main.js"
 import type { Command, IconName, Panel, PanelTab, SlotMap } from "./registries.js"
 import { type JSX } from "solid-js"
@@ -84,6 +84,21 @@ export interface BuiltinPanel extends Panel {
    * @param input - A session getter, the constant owning screen and this call's stored tab ids.
    */
   list(input: Parameters<Panel["list"]>[0]): readonly BuiltinPanelTab[]
+  /**
+   * Shows one of the routed session's subagents the user opened from its transcript, such as a subagent card or the
+   * activity capsule, typically by opening a tab for it. The host calls the first panel that declares it, only on
+   * desktop and only for a subagent of the routed session; without one, the subagent opens on its own route.
+   *
+   * @param input - The routed session, the owning screen and the subagent's session id. Do not destructure.
+   */
+  subagent?(input: {
+    /** The routed session whose transcript the subagent was opened from. */
+    readonly session: MountedSession
+    /** The session screen that owns the panel. */
+    readonly screen: SessionScreen
+    /** The subagent's session id. */
+    readonly id: string
+  }): void
 }
 
 /**
@@ -95,6 +110,84 @@ export interface BuiltinPanel extends Panel {
  * ```
  */
 export const BuiltinPanel = Registry.define<BuiltinPanel>("panel")
+
+/**
+ * Where a subagent stands for the routed session.
+ * - `listed`: one of its subagents, at any depth.
+ * - `pending`: not known yet, e.g. while its info loads after a reload.
+ * - `gone`: archived, deleted, or another session's.
+ */
+export type SubagentState = "listed" | "pending" | "gone"
+
+/** The routed session's subagents, drawn by the session screen for a built-in panel. */
+export interface SessionSubagents {
+  /**
+   * Lists the routed session's running and completed subagents, nested ones indented. Choosing a row opens it as a
+   * card does, through `BuiltinPanel.subagent`.
+   */
+  readonly List: () => JSX.Element
+  /**
+   * A subagent's live, read-only transcript with its status bar. Subagent cards inside it open through
+   * `BuiltinPanel.subagent` too.
+   *
+   * @param props - The subagent's session id, read once, and what leaving for its own session does first.
+   */
+  readonly Transcript: (props: {
+    /** The subagent's session id. */
+    readonly id: string
+    /**
+     * Runs as the user leaves for the subagent's own session from the transcript's header, before the screen routes
+     * it, e.g. to close the tab that showed it. Omit it to leave the tab open.
+     */
+    readonly onOpenFull?: () => void
+  }) => JSX.Element
+  /**
+   * A subagent's status mark: running, done, failed or interrupted.
+   *
+   * @param props - The subagent's session id.
+   */
+  readonly Status: (props: {
+    /** The subagent's session id. */
+    readonly id: string
+  }) => JSX.Element
+  /**
+   * A subagent's title, undefined until its info loads. Reactive.
+   *
+   * @param id - The subagent's session id.
+   * @returns The title.
+   */
+  title(id: string): string | undefined
+  /**
+   * Where a subagent stands for the routed session. Reactive.
+   *
+   * @param id - The subagent's session id.
+   * @returns See `SubagentState`.
+   */
+  state(id: string): SubagentState
+}
+
+/** The `SessionScreen` as the app's session screen builds it, with the members only built-ins use. */
+export interface BuiltinSessionScreen extends SessionScreen {
+  /** The routed session's subagents. */
+  readonly subagents: SessionSubagents
+}
+
+/**
+ * The members only built-ins use, on a session screen a panel or slot received.
+ *
+ * @param screen - The session screen.
+ * @returns The same object, typed with the built-in members.
+ *
+ * @example
+ * ```tsx
+ * render: (props) => <Dynamic component={builtinScreen(props.screen).subagents.List} />
+ * ```
+ */
+export function builtinScreen(screen: SessionScreen): BuiltinSessionScreen {
+  // SAFETY: the app's session screen builds every screen as a `BuiltinSessionScreen`, and built-ins run only in that
+  // host.
+  return screen as BuiltinSessionScreen
+}
 
 /** The slots of `SlotMap`, and those only built-ins fill. */
 export interface BuiltinSlotMap extends SlotMap {
@@ -388,8 +481,9 @@ export interface BuiltinMainStorage extends MainStorage {
 export interface Lifecycle {
   /**
    * Marks the app as quitting and disposes every plugin but the caller, then runs handoff (e.g. quitAndInstall) or
-   * relaunches. The caller outlives shutdown until the handoff settles, and keeps running when it fails (the promise
-   * rejects).
+   * relaunches. The caller outlives shutdown until the handoff settles, and keeps running when it fails: the other
+   * plugins start again, then the promise rejects, so the caller can retry at once. It also rejects when a restart is
+   * already in progress or the app is quitting.
    *
    * @param handoff - Runs once the others are disposed; omit it to relaunch.
    *
