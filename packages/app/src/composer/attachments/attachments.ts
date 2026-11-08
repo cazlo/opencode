@@ -22,6 +22,8 @@ export type ComposerAttachmentConfig = {
   directory: () => string
   destination: () => AttachmentDestination
   isDialogActive: () => boolean
+  /** In a split, whether a drag event targets this composer's own pane. */
+  owns?: (event: DragEvent) => boolean
   duplicate: () => void
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a failed attachment is opaque; the host formats it
   onError: (error: unknown) => void
@@ -66,7 +68,8 @@ export function createComposerAttachments(
     const mime = await attachmentMime(file)
     const destination = input.destination()
 
-    if (native(mime, destination.input) && file.size <= MAX_INLINE_BYTES) return addInline(file, mime, target, clipboard)
+    if (native(mime, destination.input) && file.size <= MAX_INLINE_BYTES)
+      return addInline(file, mime, target, clipboard)
     const sourcePath = input.getPathForFile?.(file) || undefined
 
     if (destination.local && sourcePath) return addPath(target, { filename: file.name, mime, path: sourcePath })
@@ -75,7 +78,12 @@ export function createComposerAttachments(
     return true
   }
 
-  const addInline = async (file: File, mime: string, target: NonNullable<ReturnType<typeof capture>>, clipboard: boolean) => {
+  const addInline = async (
+    file: File,
+    mime: string,
+    target: NonNullable<ReturnType<typeof capture>>,
+    clipboard: boolean,
+  ) => {
     const blob = input.store ? await input.store(file) : await createBlobReference(file)
     const sourcePath = input.getPathForFile?.(file) || undefined
 
@@ -212,6 +220,9 @@ export function createComposerAttachments(
   const handleDrop = async (event: DragEvent) => {
     if (input.isDialogActive()) return
     event.preventDefault()
+
+    // Another pane's composer takes this drop; still cancel it here so a file never navigates the window.
+    if (input.owns?.(event) === false) return
     clearDrag()
     const plainText = event.dataTransfer?.getData("text/plain")
 
@@ -235,6 +246,8 @@ export function createComposerAttachments(
     makeEventListener(document, "dragover", (event) => {
       if (input.isDialogActive()) return
       event.preventDefault()
+
+      if (input.owns?.(event) === false) return clearDrag()
       input.setDraggingType(dragType(event.dataTransfer))
     })
     makeEventListener(document, "dragleave", (event) => {
@@ -253,7 +266,10 @@ export function createComposerAttachments(
     /** Uploads still in flight for this composer; sending waits for them. */
     pending: () => uploads.items().filter((item) => pending.ids.includes(item.id)),
     cancel(id: string) {
-      uploads.items().find((item) => item.id === id)?.cancel()
+      uploads
+        .items()
+        .find((item) => item.id === id)
+        ?.cancel()
     },
     pick(fallback: () => void, done: () => void) {
       if (!input.picker) {

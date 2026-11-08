@@ -1,17 +1,29 @@
 import type { SessionInfo, SessionMessageUser } from "@opencode/client/promise"
 import type { ComposerSelection } from "@/composer/adapter"
 import { createSimpleContext } from "@opencode/ui/context"
-import { createStore, produce } from "solid-js/store"
+import { produce, reconcile } from "solid-js/store"
 import { Persist, persisted, removePersisted, draftPersistedKeys } from "@/runtime/persistence/storage"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { usePluginServers } from "@/runtime/plugin/servers"
-import { createEffect, getOwner, onCleanup, startTransition } from "solid-js"
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  getOwner,
+  onCleanup,
+  startTransition,
+  untrack,
+  type Accessor,
+} from "solid-js"
+import type { NewSessionStartView } from "@/new-session/machine"
 import { useLocation, useNavigate } from "@solidjs/router"
 import { usePlatform } from "@/runtime/platform/platform"
 import { uuid } from "@opencode/util/uuid"
 import { SessionTabsRemovedDetail } from "@/shell/titlebar/session-events"
 import { sessionHref } from "@/shell/routes/session"
 import { createTabMemory } from "./memory"
+import { createSessionPreview } from "./preview"
 import { nextTabAfterClose, pushClosedTab, removeClosedTabs, takeClosedTab, type ClosedTab } from "./closed"
 import {
   createDraftComposerState,
@@ -21,7 +33,39 @@ import {
 } from "@/composer/state"
 import { appendPrompt, promptLength } from "@/composer/prompt-parts"
 import { TabStorage } from "./schema"
-import { useCurrentRoute } from "@/shell/state/layout"
+import { useCurrentRoute, type LayoutRoute } from "@/shell/state/layout"
+import {
+  INITIAL_TAB_PROMOTION_STATE,
+  pendingPromotion,
+  runsAfterCommit,
+  transitionTabPromotion,
+  type ComposerTarget,
+  type TabPromotionCommit,
+  type TabPromotionEffect,
+  type TabPromotionEvent,
+} from "./promotion-machine"
+import {
+  createTabsHydrationState,
+  selectRecentTabKey,
+  transitionTabsHydration,
+  type TabsHydrationEffect,
+  type TabsHydrationEvent,
+} from "./hydration-machine"
+import {
+  INITIAL_SESSION_SPLIT_STATE,
+  buildSessionSplitTree,
+  canSplitSessionPaneWithTab,
+  listSessionSplitPanes,
+  mergeSessionPane,
+  moveTabToSessionPane,
+  reconcileSessionSplits,
+  replaceSessionSplitTabKey,
+  resizeSessionSplit,
+  sessionSplitStateEqual,
+  splitSessionPane,
+  type SessionSplitSide,
+  type SessionSplitState,
+} from "./split-tree"
 
 export type SessionTab = typeof TabStorage.Session.Type
 
@@ -34,6 +78,7 @@ export type PendingSession = {
   message: SessionMessageUser
   selection: ComposerSelection
   composer: ComposerState
+  view: Accessor<NewSessionStartView>
 }
 
 export type TabInfo = typeof TabStorage.Info.Type
@@ -67,6 +112,13 @@ export function sessionIDHasOpenTab(tabs: Tab[], server: ServerConnection.Key, s
   return !!findSessionTab(tabs, server, sessionID)
 }
 
+/** Whether the route shows this tab, including a session tab that shows one of its child sessions. */
+export function tabMatchesRoute(tab: Tab, route: LayoutRoute) {
+  if (route.type === "draft") return tab.type === "draft" && tab.draftID === route.draftID
+
+  return route.type === "session" && sessionIDHasOpenTab([tab], route.server, route.sessionId)
+}
+
 export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
   name: "Tabs",
   gate: false,
@@ -83,44 +135,83 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     const [info, setInfo, , infoReady] = persisted(Persist.window("tabs.info"), TabStorage.Infos, {})
     const [regions, setRegions, , regionsReady] = persisted(Persist.window("tabs.panes"), TabStorage.Regions, {})
     const [closed, setClosed, , closedReady] = persisted(Persist.window("tabs.closed"), TabStorage.Closed, [])
-    const [pending, setPending] = createStore<Record<string, PendingSession | undefined>>({})
+
+    const [splits, setSplits, , splitsReady] = persisted(
+      Persist.window("tabs.splits"),
+      TabStorage.Splits,
+      INITIAL_SESSION_SPLIT_STATE,
+    )
+
+    const [promotion, setPromotion] = createSignal(INITIAL_TAB_PROMOTION_STATE)
+
+    const commitSplits = (next: SessionSplitState) => {
+      if (sessionSplitStateEqual(splits, next)) return
+      setSplits(reconcile(next))
+    }
 
     const navigate = useNavigate()
     const location = useLocation()
     const memory = createTabMemory(getOwner())
     const currentRoute = useCurrentRoute()
 
-    const closing = new Set<string>()
-    let recentWrite = 0
-    let recentValue: string | undefined
+    const [hydration, setHydration] = createSignal(
+      createTabsHydrationState({ recent: recentReady(), closed: closedReady() }),
+    )
 
-    const recentKey = () => (recentWrite ? recentValue : recent.key)
-
-    const setRecentKey = (key: string | undefined) => {
-      const write = ++recentWrite
-      recentValue = key
-
-      if (recentReady()) {
-        setRecent("key", key)
-
-        return
-      }
-
-      void recentReady.promise?.then(() => {
-        if (write === recentWrite) setRecent("key", key)
-      })
+    const dispatchHydration = (event: TabsHydrationEvent) => {
+      const result = transitionTabsHydration(untrack(hydration), event)
+      setHydration(result.state)
+      result.effects.forEach(runHydrationEffect)
     }
 
-    const updateClosed = (update: (stack: ClosedTab[]) => ClosedTab[]) => {
-      const apply = () => setClosed((stack) => update(stack))
+    const runHydrationEffect = (effect: TabsHydrationEffect) => {
+      if (effect.type === "recent.commit") return setRecent("key", effect.key)
+      // Each operation runs on its own, so one that throws can't drop the ones queued after it.
+      effect.ops.forEach((op) =>
+        Promise.try(() => {
+          if (op.kind === "update") return setClosed((stack) => op.update(stack))
+          reopenClosedTabNow(op.target, op.options)
+        }).catch((error) => console.error("[tabs] closed tab operation failed", error)),
+      )
+    }
 
-      if (closedReady()) {
-        apply()
+    // Both run once each store loads, or fails to and runs from its initial value.
+    createEffect(() => {
+      if (recentReady()) untrack(() => dispatchHydration({ type: "recent.hydrated", persistedKey: recent.key }))
+    })
+    createEffect(() => {
+      if (closedReady()) untrack(() => dispatchHydration({ type: "closed.hydrated" }))
+    })
+    onCleanup(() => dispatchHydration({ type: "disposed" }))
 
-        return
-      }
+    const recentKey = () => selectRecentTabKey(hydration(), recent.key)
 
-      void closedReady.promise?.then(apply)
+    const setRecentKey = (key: string | undefined) =>
+      dispatchHydration({ type: "recent.set", key, persistedKey: untrack(() => recent.key) })
+
+    const updateClosed = (update: (stack: ClosedTab[]) => ClosedTab[]) =>
+      dispatchHydration({ type: "closed.op", op: { kind: "update", update } })
+
+    function reopenClosedTabNow(target?: SessionTab, options?: { append?: boolean }) {
+      const result = takeClosedTab(closed, store, target)
+
+      if (result.stack.length === closed.length) return
+      setClosed(() => result.stack)
+      const entry = result.entry
+
+      if (!entry) return
+      const index = options?.append ? store.length : Math.min(entry.index, store.length)
+
+      if (entry.info) setInfo(tabKey(entry.tab), entry.info)
+      void startTransition(() => {
+        setStore(
+          produce((tabs) => {
+            if (tabs.some((item) => tabKey(item) === tabKey(entry.tab))) return
+            tabs.splice(index, 0, entry.tab)
+          }),
+        )
+        navigateTab(entry.tab)
+      })
     }
 
     const removeDraftPersisted = (draftID: string) => {
@@ -148,7 +239,96 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       )
     }
 
+    const dispatchPromotion = (event: Exclude<TabPromotionEvent, TabPromotionCommit>) => {
+      const previous = untrack(promotion)
+      const result = transitionTabPromotion(previous, event)
+
+      if (result.state === previous) return false
+      setPromotion(result.state)
+      result.effects.forEach(runPromotionEffect)
+
+      return true
+    }
+
+    // Commits a promotion event in one transition with the tab strip and route change `update` makes. Disposal waits
+    // for the commit, so the outgoing screen never reads disposed tab memory.
+    const commitPromotion = async (event: () => TabPromotionCommit, update?: () => void) => {
+      const after: TabPromotionEffect[] = []
+
+      await startTransition(() => {
+        update?.()
+        const previous = promotion()
+        const result = transitionTabPromotion(previous, event())
+
+        if (result.state === previous) return
+        setPromotion(result.state)
+        result.effects.forEach((effect) => {
+          if (runsAfterCommit(effect)) {
+            after.push(effect)
+
+            return
+          }
+
+          runPromotionEffect(effect)
+        })
+      })
+      after.forEach(runPromotionEffect)
+    }
+
+    const runPromotionEffect = (effect: TabPromotionEffect) => {
+      if (effect.type === "composer.transfer") {
+        if (promptLength(effect.composer.current()))
+          effect.target.set(effect.composer.current(), effect.composer.cursor())
+
+        return
+      }
+
+      if (effect.type === "composer.recover") {
+        const original = memory.get<ComposerState>(tabKey(effect.draft), "prompt")
+
+        if (!original || !promptLength(effect.composer.current())) return
+        // Nothing was submitted: recover both inputs in the original draft.
+        const restored = appendPrompt(original.current(), effect.composer.current())
+        original.set(restored, promptLength(restored))
+
+        return
+      }
+
+      if (effect.type === "tab.restore") {
+        const index = store.findIndex((tab) => tabKey(tab) === effect.key)
+
+        if (index === -1) return
+        const route = currentRoute()
+        const draftKey = tabKey(effect.draft)
+        setStore(
+          produce((tabs) => {
+            tabs[index] = effect.draft
+          }),
+        )
+        commitSplits(replaceSessionSplitTabKey(splits, effect.key, draftKey))
+
+        if (recentKey() === effect.key) setRecentKey(draftKey)
+
+        if (route.type === "session" && tabMatchesRoute(effect.session, route)) navigateTab(effect.draft)
+
+        return
+      }
+
+      if (effect.type === "session.cleanup") {
+        updateClosed((stack) => removeClosedTabs(stack, effect.session.server, [effect.session.sessionId]))
+        memory.remove(effect.key)
+        removeInfo(effect.key)
+        removeRegions(effect.key)
+
+        return
+      }
+
+      memory.remove(tabKey(effect.draft))
+      removeDraftPersisted(effect.draft.draftID)
+    }
+
     onCleanup(memory.dispose)
+    onCleanup(() => dispatchPromotion({ type: "dispose" }))
 
     // A contributed server that is unlisted or whose plugin is down is still known: only its removal drops its tabs.
     const known = () =>
@@ -158,6 +338,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       if (!ready() || !recentReady()) return
       const serversSet = known()
       const next = store.filter((tab) => serversSet.has(tab.server))
+      dispatchPromotion({ type: "keep.servers", servers: serversSet })
 
       if (next.length !== store.length) {
         for (const tab of store) {
@@ -174,6 +355,10 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
       if (recent.key && !next.some((tab) => tabKey(tab) === recent.key)) setRecentKey(undefined)
       const keys = new Set(next.map(tabKey))
+
+      const previewTab = preview.current()
+
+      if (previewTab) keys.add(tabKey(previewTab))
 
       for (const key of Object.keys(info)) {
         if (!keys.has(key)) removeInfo(key)
@@ -195,47 +380,232 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     })
 
     const navigateTab = (tab: Tab) => {
+      if (preview.current()) {
+        void startTransition(() => {
+          preview.clear()
+          setRecentKey(tabKey(tab))
+          navigate(tabHref(tab))
+        })
+
+        return
+      }
+
       const href = tabHref(tab)
       setRecentKey(tabKey(tab))
       navigate(href)
     }
 
-    const removeTab = (index: number) => {
-      const tab = store[index]
-
-      if (!tab) return
+    const disposeTab = (tab: Tab) => {
       const key = tabKey(tab)
-      const draftID = tab.type === "draft" ? tab.draftID : undefined
-      const nextTab = nextTabAfterClose(store, index, recentKey() === key && location.pathname !== "/")
-      closing.add(key)
-      void startTransition(() => {
-        setStore(
-          produce((tabs) => {
-            tabs.splice(index, 1)
-          }),
-        )
 
-        if (nextTab === null) {
-          setRecentKey(undefined)
-          navigate("/")
-        }
-
-        if (nextTab) navigateTab(nextTab)
-      }).finally(() => closing.delete(key))
       memory.remove(key)
       removeInfo(key)
       removeRegions(key)
 
-      if (draftID) removeDraftPersisted(draftID)
+      if (tab.type === "draft") removeDraftPersisted(tab.draftID)
+    }
+
+    const preview = createSessionPreview({
+      tabs: () => store,
+      onKeep: (tab): SessionTab => actions.addSessionTab(tab),
+      onNavigate: (tab, isPreview) => {
+        if (isPreview) {
+          navigate(tabHref(tab))
+
+          return
+        }
+
+        navigateTab(tab)
+      },
+      onDiscard: disposeTab,
+    })
+
+    const previewRoute = () => {
+      const current = preview.current()
+
+      const route = currentRoute()
+
+      return (
+        !!current &&
+        route.type === "session" &&
+        current.server === route.server &&
+        (current.sessionId === route.sessionId || current.routeSessionId === route.sessionId)
+      )
+    }
+
+    const openTabs = createMemo(() => {
+      const current = preview.current()
+
+      if (!current || store.some((tab) => tabKey(tab) === tabKey(current))) return store
+
+      return [...store, current]
+    })
+
+    const routedTab = createMemo(() => {
+      const route = currentRoute()
+
+      if (route.type !== "session" && route.type !== "draft") return undefined
+      const current = preview.current()
+
+      if (current && tabMatchesRoute(current, route)) return current
+
+      return store.find((tab) => tabMatchesRoute(tab, route))
+    })
+
+    const routedTabKey = createMemo(() => {
+      const tab = routedTab()
+
+      return tab ? tabKey(tab) : undefined
+    })
+
+    const splitTree = createMemo(() => buildSessionSplitTree(splits))
+    const splitPanes = createMemo(() => listSessionSplitPanes(splitTree()))
+    const isSplit = createMemo(() => splitPanes().length > 1)
+
+    createEffect(() => {
+      if (!ready() || !splitsReady()) return
+      const keys = openTabs().map(tabKey)
+      const next = reconcileSessionSplits(splits, keys, routedTabKey())
+      commitSplits(next)
+    })
+
+    const resolveTabPane = (key: string) => splits.panes[key] ?? splits.activePane
+
+    const paneTabs = (paneId: string) => {
+      const all = openTabs()
+
+      if (!isSplit()) return all
+
+      return all.filter((tab) => resolveTabPane(tabKey(tab)) === paneId)
+    }
+
+    const paneSelectedTab = (paneId: string) => {
+      const tabs = paneTabs(paneId)
+      const selectedKey = splits.selected[paneId]
+
+      return (selectedKey ? tabs.find((tab) => tabKey(tab) === selectedKey) : undefined) ?? tabs[0]
+    }
+
+    // `abandon` names pending sessions that go with the tab for good, rather than staying revisitable after a close.
+    const removeTab = (index: number, abandon: readonly string[] = []) => {
+      const tab = store[index]
+
+      if (!tab) return
+
+      const active = !previewRoute() && tabMatchesRoute(tab, currentRoute())
+
+      const nextTab = (() => {
+        if (active && isSplit()) {
+          const paneId = resolveTabPane(tabKey(tab))
+          const inPane = store.filter((item) => resolveTabPane(tabKey(item)) === paneId)
+          const paneIndex = inPane.findIndex((item) => tabKey(item) === tabKey(tab))
+
+          if (inPane.length > 1 && paneIndex !== -1) {
+            return nextTabAfterClose(inPane, paneIndex, true)
+          }
+
+          const panes = splitPanes()
+          const panePos = panes.indexOf(paneId)
+          const fallbackPaneId = panes[panePos + 1] ?? panes[panePos - 1]
+          const fallbackKey = fallbackPaneId ? splits.selected[fallbackPaneId] : undefined
+
+          const fallbackTab = fallbackKey
+            ? store.find((item) => tabKey(item) === fallbackKey && tabKey(item) !== tabKey(tab))
+            : undefined
+
+          if (fallbackTab) return fallbackTab
+        }
+
+        return nextTabAfterClose(store, index, active)
+      })()
+
+      void commitPromotion(
+        () => ({ type: "abandon", keys: abandon }),
+        () => {
+          setStore(
+            produce((tabs) => {
+              tabs.splice(index, 1)
+            }),
+          )
+
+          if (nextTab === null) {
+            setRecentKey(undefined)
+            navigate("/")
+          }
+
+          if (nextTab) navigateTab(nextTab)
+        },
+      )
+      disposeTab(tab)
+    }
+
+    // Inserts synchronously so a split or move can use the tab in the same batch.
+    // A preview is kept (leaving `openTabs`), and a tab not yet open is added from `open`.
+    const ensureOpen = (key: string, open?: Omit<SessionTab, "type">) => {
+      const currentPreview = preview.current()
+
+      const target =
+        currentPreview && tabKey(currentPreview) === key
+          ? currentPreview
+          : open && { type: "session" as const, ...open }
+
+      if (!target || tabKey(target) !== key) return
+
+      if (target === currentPreview) preview.keep(currentPreview)
+
+      if (store.some((tab) => tabKey(tab) === key)) return
+
+      setStore(produce((tabs) => void tabs.push(target)))
     }
 
     const actions = {
+      preview: preview.current,
+      previewSession(tab: Omit<SessionTab, "type">) {
+        void startTransition(() => preview.open(tab))
+      },
+      keepPreview(tab?: SessionTab) {
+        void startTransition(() => preview.keep(tab))
+      },
+      closePreview() {
+        if (!preview.current()) return
+        void startTransition(() => {
+          preview.clear()
+          const next = store.find((tab) => tabKey(tab) === recentKey()) ?? store.at(-1)
+
+          if (next) {
+            navigateTab(next)
+
+            return
+          }
+
+          navigate("/")
+        })
+      },
+      sessionTab(server: ServerConnection.Key, sessionID: string) {
+        const current = preview.current()
+
+        return (
+          findSessionTab(store, server, sessionID) ??
+          (current ? findSessionTab([current], server, sessionID) : undefined)
+        )
+      },
       addSessionTab: (tab: Omit<SessionTab, "type">) => {
         const next = { type: "session" as const, ...tab }
-        const existing = store.find((item) => tabKey(item) === tabKey(next))
 
-        if (existing) return existing
+        const current = preview.current()
+
+        const existing = store.find(
+          (item): item is SessionTab => item.type === "session" && tabKey(item) === tabKey(next),
+        )
+
+        if (existing) {
+          if (current?.server === next.server && current.sessionId === next.sessionId) preview.release()
+
+          return existing
+        }
+
         void startTransition(() => {
+          if (current?.server === next.server && current.sessionId === next.sessionId) preview.release()
           setStore(
             produce((tabs) => {
               if (tabs.some((item) => tabKey(item) === tabKey(next))) return
@@ -250,9 +620,27 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         setStore(
           produce((tabs) => {
             const byKey = new Map(tabs.map((tab) => [tabKey(tab), tab]))
-            const next = keys.flatMap((key) => byKey.get(key) ?? [])
+            const reordered = keys.flatMap((key) => byKey.get(key) ?? [])
 
-            if (next.length !== tabs.length) return
+            if (reordered.length <= 1) return
+
+            if (reordered.length === tabs.length) {
+              tabs.splice(0, tabs.length, ...reordered)
+
+              return
+            }
+
+            const keySet = new Set(reordered.map(tabKey))
+            let cursor = 0
+
+            const next = tabs.map((tab) => {
+              if (!keySet.has(tabKey(tab))) return tab
+              const replacement = reordered[cursor]
+              cursor += 1
+
+              return replacement ?? tab
+            })
+
             tabs.splice(0, tabs.length, ...next)
           }),
         )
@@ -264,11 +652,17 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
         return tab
       },
-      async newDraft(draft: Omit<DraftTab, "type" | "draftID">, prompt?: string, model?: PromptModel) {
-        const draftID = uuid()
-        const tab = { type: "draft" as const, draftID, ...draft }
+      /** Opens a draft tab; pass `draftID` to know it before the draft opens. */
+      async newDraft(
+        draft: Omit<DraftTab, "type" | "draftID"> & { draftID?: string },
+        prompt?: string,
+        model?: PromptModel,
+      ) {
+        const draftID = draft.draftID ?? uuid()
+        const tab = { ...draft, type: "draft" as const, draftID }
         memory.ensure(tabKey(tab), "prompt", () => createDraftComposerState(draftID, { prompt, model }))
         await startTransition(() => {
+          preview.clear()
           setStore(
             produce((tabs) => {
               tabs.push(tab)
@@ -295,52 +689,40 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
           }),
         )
       },
-      promoteDraft(draftID: string, session: Omit<SessionTab, "type">) {
-        // Keep the replacement and navigation atomic so /new-session never renders
-        // after its backing draft tab has been removed from the store.
-        const active = location.pathname === "/new-session" && location.query.draftId === draftID
-        const next = { type: "session" as const, ...session }
-        void startTransition(() => {
-          setStore(
-            produce((tabs) => {
-              const index = tabs.findIndex((tab) => tab.type === "draft" && tab.draftID === draftID)
-
-              if (index !== -1) tabs[index] = next
-            }),
-          )
-
-          if (recent.key === `draft:${draftID}`) setRecentKey(tabKey(next))
-
-          if (active) navigateTab(next)
-        })
-        memory.remove(`draft:${draftID}`)
-        removeDraftPersisted(draftID)
-      },
       pendingSession(server: ServerConnection.Key, sessionID: string): PendingSession | undefined {
-        return pending[tabKey({ type: "session", server, sessionId: sessionID })]
+        return pendingPromotion(promotion(), tabKey({ type: "session", server, sessionId: sessionID }))
       },
       prepareSession(
         draftID: string,
         session: Omit<SessionTab, "type">,
-        preview: { message: SessionMessageUser; selection: ComposerSelection },
+        preview: Omit<PendingSession, "draft" | "composer">,
       ) {
         // Snapshot the draft before replacing its store entry; keep its composer alive for rollback.
         const draft = { ...actions.draft(draftID) }
         const next = { type: "session" as const, ...session }
         const key = tabKey(next)
         const composer = createMemoryComposerState()
+        let attempt = 0
 
         const ready = startTransition(() => {
-          setPending(key, { draft, ...preview, composer })
+          dispatchPromotion({ type: "prepare", key, session: next, pending: { draft, ...preview, composer } })
+          const state = promotion()
+          attempt = state.status === "active" ? state.attempt : 0
           const index = store.findIndex((tab) => tab.type === "draft" && tab.draftID === draftID)
 
-          if (index === -1) return
+          if (index === -1) {
+            void commitPromotion(() => ({ type: "abandon", keys: [key] }))
+
+            return
+          }
+
           const active = location.pathname === "/new-session" && location.query.draftId === draftID
           setStore(
             produce((tabs) => {
               tabs[index] = next
             }),
           )
+          commitSplits(replaceSessionSplitTabKey(splits, tabKey(draft), key))
 
           if (recentKey() === tabKey(draft)) setRecentKey(key)
 
@@ -349,65 +731,27 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
         return {
           ready,
-          async complete(target: ReturnType<ComposerState["capture"]>) {
+          async complete(target: ComposerTarget) {
             await ready
 
-            if (!pending[key]) return
+            if (!dispatchPromotion({ type: "complete.start", key, attempt, target })) return
             await memory.get<ComposerState>(key, "prompt")?.ready.promise
-
-            if (promptLength(composer.current())) target.set(composer.current(), composer.cursor())
-            await startTransition(() => setPending(key, undefined))
-            memory.remove(tabKey(draft))
-            removeDraftPersisted(draftID)
+            await commitPromotion(() => ({ type: "complete.settled", key, attempt }))
           },
           async rollback(worktree?: string) {
             await ready
 
-            if (!pending[key]) return
-            const original = memory.get<ComposerState>(tabKey(draft), "prompt")
-
-            if (original && promptLength(composer.current())) {
-              // Nothing was submitted: recover both inputs in the original draft.
-              const restored = appendPrompt(original.current(), composer.current())
-              original.set(restored, promptLength(restored))
-            }
-
-            await startTransition(() => {
-              const index = store.findIndex((tab) => tabKey(tab) === key)
-
-              if (index !== -1) {
-                const restored = worktree === undefined ? draft : { ...draft, worktree, branch: undefined }
-                const route = currentRoute()
-                setStore(
-                  produce((tabs) => {
-                    tabs[index] = restored
-                  }),
-                )
-
-                if (recentKey() === key) setRecentKey(tabKey(restored))
-
-                if (
-                  route.type === "session" &&
-                  route.server === session.server &&
-                  route.sessionId === session.sessionId
-                ) {
-                  navigateTab(restored)
-                }
-              }
-
-              setPending(key, undefined)
-            })
-            updateClosed((stack) => removeClosedTabs(stack, session.server, [session.sessionId]))
-            memory.remove(key)
-            removeInfo(key)
-
-            if (store.some((tab) => tab.type === "draft" && tab.draftID === draftID)) return
-            memory.remove(tabKey(draft))
-            removeDraftPersisted(draftID)
+            if (!dispatchPromotion({ type: "rollback.start", key, attempt, worktree })) return
+            await commitPromotion(() => ({
+              type: "rollback.settled",
+              key,
+              attempt,
+              open: store.some((tab) => tabKey(tab) === key),
+            }))
           },
         }
       },
-      removeTab,
+      removeTab: (index: number) => removeTab(index),
       // User-initiated close: records the tab so it can be reopened.
       // Cleanup paths (missing sessions, archive, server removal) go through
       // removeTab and friends directly and are not recorded.
@@ -419,35 +763,48 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         if (tab.type === "session") updateClosed((stack) => pushClosedTab(stack, tab, index, info[tabKey(tab)]))
         removeTab(index)
       },
-      reopenClosedTab(target?: SessionTab, options?: { append?: boolean }) {
-        if (!closedReady()) {
-          void closedReady.promise?.then(() => actions.reopenClosedTab(target, options))
+      closeTabs(keys: string[], keep: Tab) {
+        const removed = new Set(keys)
 
-          return
-        }
+        const entries = store.flatMap((tab, index) => (removed.has(tabKey(tab)) ? [{ tab, index }] : []))
 
-        const result = takeClosedTab(closed, store, target)
+        // Recording right-to-left lets successive reopens restore the original positions.
+        updateClosed((stack) =>
+          entries
+            .toReversed()
+            .reduce((stack, entry) => pushClosedTab(stack, entry.tab, entry.index, info[tabKey(entry.tab)]), stack),
+        )
 
-        if (result.stack.length === closed.length) return
-        setClosed(() => result.stack)
-        const entry = result.entry
+        const route = currentRoute()
+        const shown = !previewRoute() && entries.some((entry) => tabMatchesRoute(entry.tab, route))
+        const remembered = recentKey()
 
-        if (!entry) return
-        const index = options?.append ? store.length : Math.min(entry.index, store.length)
-
-        if (entry.info) setInfo(tabKey(entry.tab), entry.info)
         void startTransition(() => {
-          setStore(
-            produce((tabs) => {
-              if (tabs.some((item) => tabKey(item) === tabKey(entry.tab))) return
-              tabs.splice(index, 0, entry.tab)
-            }),
-          )
-          navigateTab(entry.tab)
+          setStore((tabs) => tabs.filter((tab) => !removed.has(tabKey(tab))))
+
+          if (shown) {
+            navigateTab(keep)
+
+            return
+          }
+
+          if (remembered && removed.has(remembered)) setRecentKey(tabKey(keep))
         })
+        entries.forEach((entry) => disposeTab(entry.tab))
+      },
+      reopenClosedTab(target?: SessionTab, options?: { append?: boolean }) {
+        dispatchHydration({ type: "closed.op", op: { kind: "reopen", target, options } })
       },
       removeSessionTab(input: Omit<SessionTab, "type">) {
+        const current = preview.current()
+
+        if (
+          current?.server === input.server &&
+          (current.sessionId === input.sessionId || current.routeSessionId === input.sessionId)
+        )
+          actions.closePreview()
         updateClosed((stack) => removeClosedTabs(stack, input.server, [input.sessionId]))
+        const abandon = [tabKey({ type: "session", ...input })]
 
         const index = store.findIndex(
           (tab) =>
@@ -456,24 +813,37 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
             (tab.sessionId === input.sessionId || tab.routeSessionId === input.sessionId),
         )
 
-        if (index !== -1) removeTab(index)
+        if (index !== -1) {
+          removeTab(index, abandon)
+
+          return
+        }
+
+        void commitPromotion(() => ({ type: "abandon", keys: abandon }))
       },
       removeServer(key: ServerConnection.Key) {
         updateClosed((stack) => stack.filter((entry) => entry.tab.server !== key))
+        dispatchPromotion({ type: "abandon.server", server: key })
         const drafts = store.flatMap((tab) => (tab.type === "draft" && tab.server === key ? [tab.draftID] : []))
         const removed = store.filter((tab) => tab.server === key).map(tabKey)
         setStore((tabs) => tabs.filter((tab) => tab.server !== key))
+
+        if (preview.current()?.server === key) actions.closePreview()
 
         for (const key of removed) memory.remove(key)
 
         for (const key of removed) removeInfo(key)
 
-        if (recent.key && removed.includes(recent.key)) setRecentKey(undefined)
+        if (removed.some((key) => key === recentKey())) setRecentKey(undefined)
 
         for (const draftID of drafts) removeDraftPersisted(draftID)
       },
       removeSessions: (input: SessionTabsRemovedDetail) => {
         const targetServer = input.server
+
+        const current = preview.current()
+
+        if (current?.server === targetServer && input.sessionIDs.includes(current.sessionId)) actions.closePreview()
         updateClosed((stack) => removeClosedTabs(stack, targetServer, input.sessionIDs))
 
         const removed = store
@@ -482,53 +852,53 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
           )
           .map(tabKey)
 
-        void startTransition(() => {
-          setStore(
-            produce((tabs) => {
-              const sessionIDs = new Set(input.sessionIDs)
-              const route = currentRoute()
-              const sessionRoute = route.type === "session" ? route : undefined
+        const abandon = input.sessionIDs.map((sessionId) =>
+          tabKey({ type: "session", server: targetServer, sessionId }),
+        )
 
-              const currentIndex = sessionRoute
-                ? tabs.findIndex(
-                    (tab) =>
-                      tab.type === "session" &&
-                      tab.server === sessionRoute.server &&
-                      tab.sessionId === sessionRoute.sessionId,
-                  )
-                : -1
+        void commitPromotion(
+          () => ({ type: "abandon", keys: abandon }),
+          () => {
+            setStore(
+              produce((tabs) => {
+                const sessionIDs = new Set(input.sessionIDs)
+                const route = currentRoute()
 
-              const currentTab = tabs[currentIndex]
+                const currentIndex =
+                  route.type === "session" ? tabs.findIndex((tab) => tabMatchesRoute(tab, route)) : -1
 
-              const removedCurrent =
-                currentTab?.type === "session" &&
-                currentTab.server === targetServer &&
-                sessionIDs.has(currentTab.sessionId)
+                const currentTab = tabs[currentIndex]
 
-              for (let i = tabs.length - 1; i >= 0; i--) {
-                const tab = tabs[i]
+                const removedCurrent =
+                  currentTab?.type === "session" &&
+                  currentTab.server === targetServer &&
+                  sessionIDs.has(currentTab.sessionId)
 
-                if (!tab || tab.type !== "session") continue
+                for (let i = tabs.length - 1; i >= 0; i--) {
+                  const tab = tabs[i]
 
-                if (tab.server !== targetServer) continue
+                  if (!tab || tab.type !== "session") continue
 
-                if (!sessionIDs.has(tab.sessionId)) continue
-                tabs.splice(i, 1)
-              }
+                  if (tab.server !== targetServer) continue
 
-              if (!removedCurrent) return
+                  if (!sessionIDs.has(tab.sessionId)) continue
+                  tabs.splice(i, 1)
+                }
 
-              const nextTab =
-                tabs.slice(currentIndex).find((tab) => tab.type === "session") ??
-                tabs.slice(0, currentIndex).findLast((tab) => tab.type === "session")
+                if (!removedCurrent) return
 
-              if (nextTab) navigateTab(nextTab)
-              else navigate("/")
-            }),
-          )
+                const nextTab =
+                  tabs.slice(currentIndex).find((tab) => tab.type === "session") ??
+                  tabs.slice(0, currentIndex).findLast((tab) => tab.type === "session")
 
-          if (recent.key && removed.includes(recent.key)) setRecentKey(undefined)
-        })
+                if (nextTab) navigateTab(nextTab)
+                else navigate("/")
+              }),
+            )
+
+            if (removed.some((key) => key === recentKey())) setRecentKey(undefined)
+          },
+        )
 
         for (const key of removed) memory.remove(key)
 
@@ -556,6 +926,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       },
       select: navigateTab,
       remember(tab: Tab) {
+        preview.activate(tab)
         const key = tabKey(tab)
 
         if (recentKey() !== key) setRecentKey(key)
@@ -563,7 +934,12 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       rememberSessionRoute(tab: SessionTab, sessionId: string, parentId?: string) {
         const index = store.findIndex((item) => tabKey(item) === tabKey(tab))
 
-        if (index === -1) return
+        if (index === -1) {
+          if (preview.current() === tab) preview.setRoute(sessionId, parentId)
+
+          return
+        }
+
         setStore(
           index,
           produce((item) => {
@@ -575,6 +951,14 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       },
       toggleHome(input: { home: boolean; current?: Tab }) {
         if (input.home) {
+          const current = preview.current()
+
+          if (current) {
+            navigate(tabHref(current))
+
+            return
+          }
+
           const tab = store.find((tab) => tabKey(tab) === recentKey())
 
           if (tab) navigateTab(tab)
@@ -583,7 +967,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         }
 
         if (input.current) {
-          setRecentKey(tabKey(input.current))
+          if (input.current !== preview.current()) setRecentKey(tabKey(input.current))
           navigate("/")
 
           return
@@ -637,8 +1021,138 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
         setRegions(key, size, value)
       },
+      split: {
+        state: () => splits,
+        tree: splitTree,
+        panes: splitPanes,
+        isSplit,
+        activePane: () => splits.activePane,
+        selected: () => splits.selected,
+        tabPane: resolveTabPane,
+        paneTabs,
+        paneSelectedTab,
+        canSplitWithTab(key: string, targetPaneId: string) {
+          return canSplitSessionPaneWithTab(splits, key, targetPaneId, openTabs().map(tabKey))
+        },
+        focusPane(paneId: string) {
+          const tab = paneSelectedTab(paneId)
+
+          if (!tab) return
+          const key = tabKey(tab)
+          commitSplits({
+            ...splits,
+            activePane: paneId,
+            selected: {
+              ...splits.selected,
+              [paneId]: key,
+            },
+          })
+
+          if (!tabMatchesRoute(tab, currentRoute())) {
+            navigateTab(tab)
+          }
+        },
+        selectInPane(paneId: string, tab: Tab) {
+          const key = tabKey(tab)
+          commitSplits({
+            ...splits,
+            activePane: paneId,
+            panes: {
+              ...splits.panes,
+              [key]: paneId,
+            },
+            selected: {
+              ...splits.selected,
+              [paneId]: key,
+            },
+          })
+          navigateTab(tab)
+        },
+        splitPane(
+          key: string,
+          targetPaneId: string,
+          side: SessionSplitSide,
+          fallbackSelected?: Readonly<Record<string, string>>,
+          open?: Omit<SessionTab, "type">,
+        ) {
+          // One batch: the reconcile effect must not see the tab missing from the store between the insert and the commit.
+          const allTabs = batch(() => {
+            ensureOpen(key, open)
+            const tabs = openTabs()
+
+            commitSplits(
+              splitSessionPane(splits, {
+                tabKey: key,
+                targetPaneId,
+                side,
+                newPaneId: uuid(),
+                splitId: uuid(),
+                tabKeys: tabs.map(tabKey),
+                fallbackSelected,
+              }),
+            )
+
+            return tabs
+          })
+
+          const targetTab = allTabs.find((item) => tabKey(item) === key)
+
+          if (targetTab && !tabMatchesRoute(targetTab, currentRoute())) {
+            navigateTab(targetTab)
+          }
+        },
+        moveTabToPane(
+          key: string,
+          targetPaneId: string,
+          beforeTabKey?: string,
+          fallbackSelected?: Readonly<Record<string, string>>,
+          open?: Omit<SessionTab, "type">,
+        ) {
+          const allTabs = batch(() => {
+            ensureOpen(key, open)
+            const tabs = openTabs()
+
+            const result = moveTabToSessionPane(splits, {
+              tabKey: key,
+              targetPaneId,
+              beforeTabKey,
+              tabKeys: tabs.map(tabKey),
+              fallbackSelected,
+            })
+
+            actions.reorder(result.orderedTabKeys)
+            commitSplits(result.state)
+
+            return tabs
+          })
+
+          const targetTab = allTabs.find((item) => tabKey(item) === key)
+
+          if (targetTab && !tabMatchesRoute(targetTab, currentRoute())) {
+            navigateTab(targetTab)
+          }
+        },
+        resizeSplit(splitId: string, ratio: number) {
+          commitSplits(resizeSessionSplit(splits, splitId, ratio))
+        },
+        unsplitPane(paneId: string) {
+          commitSplits(mergeSessionPane(splits, paneId, openTabs().map(tabKey), routedTabKey()))
+        },
+      },
     }
 
-    return { ...actions, store, info, closed, ready, infoReady, recentReady, closedReady, regionsReady }
+    return {
+      ...actions,
+      store,
+      info,
+      closed,
+      ready,
+      infoReady,
+      recentReady,
+      recentKey,
+      closedReady,
+      regionsReady,
+      splitsReady,
+    }
   },
 })

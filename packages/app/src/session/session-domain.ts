@@ -9,3 +9,11 @@ export function selectVisibleSessionUserMessages(messages: SessionMessageUser[],
 
   return messages.filter((message) => message.id < revertMessageID)
 }
+
+export function hasVisibleSessionMessages(messages: readonly SessionMessageInfo[], revertMessageID?: string) {
+  if (messages.length === 0) return false
+
+  if (!revertMessageID) return true
+
+  return messages.some((message) => message.id < revertMessageID)
+}

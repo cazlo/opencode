@@ -44,9 +44,8 @@ import { SessionTodoPill } from "./todo-pill"
 import { sessionTodos, todoFinished } from "./todos"
 import { useOpenSessionRoute } from "../session-identity-header"
 import { resolveSessionComposerSelection } from "./selection"
-import { composerModelLabelKey, composerModelLabels, composerProviderName } from "@/composer/model-label"
-import { useProviders } from "@/providers/catalog/providers"
 import { SubagentBar } from "./subagent-bar"
+import { createSubagentContextPercent, createSubagentModelLabel } from "../subagents/model-label"
 import { createSessionRequestModel } from "../requests/model"
 import type { Region } from "@/runtime/plugin/panels"
 import { SessionLocationMissing } from "./location-missing"
@@ -168,7 +167,7 @@ export function createActiveSessionRegion(input: {
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.defaultPrevented) return
+    if (!input.session.identity.params.focused || event.defaultPrevented) return
     const path = event.composedPath()
     const target = path.find((item): item is HTMLElement => item instanceof HTMLElement)
     const active = activeElement()
@@ -243,7 +242,9 @@ export function createActiveSessionRegion(input: {
     setActiveMessage: input.timeline.actions.setActiveMessage,
   })
 
-  const revertMessage: NonNullable<SessionUserActions["revert"]> = ({ messageID }) => revert.to(messageID)
+  const revertMessage: NonNullable<SessionUserActions["revert"]> = (target) =>
+    revert.to(target.messageID, target.sessionID)
+
   const fork = useSessionFork()
   const forkMessage: NonNullable<SessionUserActions["fork"]> = (target) => fork(target).then(() => undefined)
 
@@ -319,20 +320,28 @@ export function createActiveSessionRegion(input: {
       return model ? { id: model.id, providerID: model.provider.id, variant: selection.variant.current() } : undefined
     },
   })
-  command.register("palette", () => [
-    {
-      id: "command.palette",
-      title: language.t("command.palette"),
-      hidden: true,
-      onSelect: () => command.trigger("file.open", "palette"),
-    },
-  ])
+  createEffect(() => {
+    if (!input.session.identity.params.focused) return
+    command.register("palette", () => [
+      {
+        id: "command.palette",
+        title: language.t("command.palette"),
+        hidden: true,
+        onSelect: () => command.trigger("file.open", "palette"),
+      },
+    ])
+  })
 
   const dock = {
     state,
     parentID: input.session.data.parentID,
     centered: input.screen.centered,
-    onResponseSubmit: input.timeline.actions.resume,
+    // Submitting reads past the automatic unread marker. Keep a reader's own scroll or revealed tool in place.
+    onResponseSubmit: () => {
+      const anchor = input.timeline.follow.anchor()
+
+      if (input.timeline.follow.following() || (anchor && !anchor.partID)) input.timeline.actions.resume()
+    },
     openParent,
     focusPrompt: () => focusPrompt(),
     setPromptRef: (element: HTMLDivElement) => {
@@ -414,6 +423,8 @@ export function ActiveSessionComposerRegion(props: {
   model: SessionComposerController
   suggestionBoundary: () => HTMLElement | undefined
   onReveal: (target: string) => void
+  /** Takes a subagent opened from the activity capsule when a side tab can show it. */
+  openSubagent?: (sessionID: string) => boolean
 }) {
   const location = useWorkspaceLocation()
   const data = useData()
@@ -422,14 +433,24 @@ export function ActiveSessionComposerRegion(props: {
   const openRoute = useOpenSessionRoute()
 
   // Only the server's LocationNotFoundError for the session's own Location replaces the composer.
-  const missing = createMemo(() => {
-    const ref = location().missing
-    const info = props.session.data.info()
+  // A refetched session info (on reconnect) must not remount the keyed view and close its open menu.
+  const missing = createMemo(
+    () => {
+      const ref = location().missing
+      const info = props.session.data.info()
 
-    if (!ref || !info || !sameDirectory(info.location.directory, ref.directory)) return
+      if (!ref || !info || !sameDirectory(info.location.directory, ref.directory)) return
 
-    return { directory: info.location.directory, sessionID: info.id, projectID: info.projectID }
-  })
+      return { directory: info.location.directory, sessionID: info.id, projectID: info.projectID }
+    },
+    undefined,
+    {
+      equals: (previous, next) =>
+        previous?.directory === next?.directory &&
+        previous?.sessionID === next?.sessionID &&
+        previous?.projectID === next?.projectID,
+    },
+  )
 
   // Subagents count while their session runs, or while their blocking call waits for its child session.
   const subagents = createMemo<SessionActivityItem[]>(() =>
@@ -467,7 +488,11 @@ export function ActiveSessionComposerRegion(props: {
 
     if (!current) return
 
-    if (item.sessionID) return openRoute(current, item.sessionID)
+    if (item.sessionID) {
+      if (props.openSubagent?.(item.sessionID)) return
+
+      return openRoute(current, item.sessionID)
+    }
 
     // A starting subagent call has no session yet, so it lives in this timeline.
     props.onReveal(item.target)
@@ -510,35 +535,15 @@ export function ActiveSessionComposerRegion(props: {
       ),
   }
 
-  const providers = useProviders(() => props.session.data.info()?.location.directory)
+  const subagentModel = createSubagentModelLabel({
+    info: props.session.data.info,
+    messages: props.session.history.messages,
+  })
 
-  const modelLabels = createMemo(() =>
-    composerModelLabels(
-      providers.all(),
-      providers.connected().map((provider) => provider.id),
-    ),
-  )
-
-  const subagentModel = () => {
-    const ref =
-      props.session.data.info()?.model ??
-      props.session.history.messages().findLast((message) => message.type === "assistant")?.model
-
-    if (!ref) return
-    const label = modelLabels().get(composerModelLabelKey(ref.providerID, ref.id))
-
-    return {
-      provider: label
-        ? label.provider
-        : composerProviderName(
-            ref.providerID,
-            providers.all(),
-            providers.connected().map((provider) => provider.id),
-          ),
-      name: label?.model ?? ref.id,
-      variant: ref.variant,
-    }
-  }
+  const subagentContextPercent = createSubagentContextPercent({
+    info: props.session.data.info,
+    messages: props.session.history.messages,
+  })
 
   const subagentStatus = () => {
     if (props.session.data.working()) return "running"
@@ -556,6 +561,7 @@ export function ActiveSessionComposerRegion(props: {
               agent={info().agent}
               model={subagentModel()}
               status={subagentStatus()}
+              contextPercent={subagentContextPercent()}
               started={info().time.created}
               ended={subagentStatus() === "running" ? undefined : (info().time.idle ?? info().time.updated)}
               onBack={props.model.region.openParent}

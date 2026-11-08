@@ -22,6 +22,7 @@ export function createTimelineCache(
   render: (source: TimelineSessionSource, active: Accessor<boolean>) => JSX.Element,
   visible: Accessor<boolean>,
   transcript: (sessionID: string) => readonly unknown[],
+  open?: (sessionID: string) => boolean,
 ) {
   const owner = getOwner()
   // These providers follow the selected Location. Each view reads its own copies, which hold while it is detached,
@@ -127,7 +128,13 @@ export function createTimelineCache(
                 get backgroundCompaction() {
                   return backgroundCompaction()
                 },
-                navigateToSession: data.navigateToSession,
+                // On desktop a side tab takes subagents opened from this transcript; otherwise they open in place.
+                navigateToSession:
+                  data.navigateToSession &&
+                  ((sessionID: string) => {
+                    if (open?.(sessionID)) return
+                    data.navigateToSession?.(sessionID)
+                  }),
                 sessionHref: data.sessionHref,
                 readMedia: data.readMedia,
                 peekMedia: data.peekMedia,

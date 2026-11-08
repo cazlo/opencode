@@ -1,5 +1,6 @@
-import { Navigate, useSearchParams } from "@solidjs/router"
+import { Navigate } from "@solidjs/router"
 import { createMemo, ErrorBoundary, Show, type ParentProps } from "solid-js"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { CommentsProvider } from "@/composer/comments"
 import { FileProvider } from "@/workspaces/files/model"
 import { useGlobal } from "@/runtime/server/runtime"
@@ -8,29 +9,30 @@ import { ModelsProvider } from "@/providers/models/models"
 import { ComposerPersistenceProvider } from "@/composer/persistence"
 import { ServerProvider, useServer } from "@/runtime/server/current"
 import { ServerConnection } from "@/runtime/server/registry"
+import { isServerIncompatible } from "@/runtime/server/health-machine"
 import { useTabs, type DraftTab } from "@/shell/tabs/tabs"
 import { SessionUIProvider } from "@/shell/routes/session-ui-provider"
 import NewSession from "@/new-session/screen"
-import { ServerUnavailablePanel } from "@/session/server-unavailable-panel"
+import { ServerSignedOutPanel, ServerUnavailablePanel } from "@/session/server-unavailable-panel"
 import { ErrorPage } from "@/shell/errors/error"
 import { SessionPanelFrame, SessionRouteFrame } from "@/session/session-frame"
 
 export function DraftRoute() {
-  const [search] = useSearchParams<{ draftId?: string }>()
+  const params = useSessionRouteParams()
   const tabs = useTabs()
 
   return (
     <Show
-      when={tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === search.draftId)}
+      when={tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === params.draftId)}
       keyed
-      fallback={tabs.ready() && <Navigate href="/" />}
+      fallback={!params.split && tabs.ready() && <Navigate href="/" />}
     >
       {(draft) => <ResolvedDraftRoute draft={draft} />}
     </Show>
   )
 }
 
-function ResolvedDraftRoute(props: { draft: DraftTab }) {
+export function ResolvedDraftRoute(props: { draft: DraftTab }) {
   const global = useGlobal()
   const conn = createMemo(() => global.servers.list().find((item) => ServerConnection.key(item) === props.draft.server))
 
@@ -38,7 +40,16 @@ function ResolvedDraftRoute(props: { draft: DraftTab }) {
     <Show when={`${props.draft.server}\0${props.draft.directory}`} keyed>
       <Show when={conn()} keyed>
         {(conn) => (
-          <ServerProvider conn={conn}>
+          <ServerProvider
+            conn={conn}
+            signedOut={
+              <SessionRouteFrame padded>
+                <SessionPanelFrame raised>
+                  <ServerSignedOutPanel conn={conn} />
+                </SessionPanelFrame>
+              </SessionRouteFrame>
+            }
+          >
             <ResolvedDraftContent draft={props.draft} />
           </ServerProvider>
         )}
@@ -53,7 +64,7 @@ function ResolvedDraftContent(props: { draft: DraftTab }) {
 
   return (
     <Show
-      when={!server.health?.incompatible}
+      when={!isServerIncompatible(server.health)}
       fallback={
         <SessionRouteFrame padded>
           <SessionPanelFrame raised>

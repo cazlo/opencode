@@ -1,10 +1,11 @@
 import { useDialog } from "@opencode/ui/context/dialog"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { Icon } from "@opencode/ui/icon"
 import { Slash } from "@opencode/ui/slash"
 import { Keybind } from "@opencode/ui/keybind"
 import { useCommand } from "@/shell/commands/command"
-import { Show, createMemo, createSignal, type JSX } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, untrack, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { getFilename } from "@opencode/util/path"
@@ -36,8 +37,15 @@ import { useSettings } from "@/settings/model"
 import type { NewSessionWorkspaceController } from "./workspace/controller"
 import { NewSessionBranch } from "./workspace/selector"
 import { NewSessionBrickBreaker } from "./brick-breaker"
-import { NewSessionPinBoard, type PinBoardHandle } from "./pin-board"
-import { NewSessionWordmark, type LodgerBall } from "./wordmark"
+import { NewSessionPinBoard } from "./pin-board"
+import { NewSessionWordmark } from "./wordmark"
+import {
+  createWordmarkState,
+  selectBrickBreaker,
+  selectPinBoard,
+  transitionWordmark,
+  type WordmarkEvent,
+} from "./wordmark-machine"
 
 const providerTipDismissalDuration = 30 * 24 * 60 * 60 * 1000
 
@@ -48,17 +56,6 @@ export const WorkspaceOnboardingSchema = Persistence.struct({
 export const ProviderTipSchema = Persistence.struct({
   dismissedAt: Schema.Finite,
 })
-
-type WordmarkState = {
-  box?: HTMLDivElement
-  mode: "flat" | "open" | "closing"
-  game: boolean
-}
-
-type BrickBreakerHandles = {
-  board?: PinBoardHandle
-  ball?: LodgerBall
-}
 
 export function NewSessionView(props: {
   composer: ComposerModel
@@ -74,7 +71,16 @@ export function NewSessionView(props: {
 
   const settings = useSettings()
 
-  const [wordmark, setWordmark] = createStore<WordmarkState>({ mode: "flat", game: false })
+  const [wordmark, setWordmark] = createSignal(createWordmarkState(false))
+  const [logo, setLogo] = createSignal<HTMLDivElement>()
+
+  const dispatchWordmark = (event: WordmarkEvent) =>
+    untrack(() => {
+      const next = transitionWordmark(wordmark(), event)
+      setWordmark(next.state)
+
+      if (next.effects.some((effect) => effect.type === "focus.composer")) props.composer.restoreFocus()
+    })
 
   const location = (project?: PromptProject) =>
     props.location({
@@ -84,8 +90,6 @@ export function NewSessionView(props: {
       },
     })
 
-  // Imperative handles for the brick breaker; they are not reactive state.
-  const handles: BrickBreakerHandles = {}
   let panel!: HTMLDivElement
 
   return (
@@ -102,15 +106,11 @@ export function NewSessionView(props: {
         <div class="absolute inset-x-0 top-[25.375%] flex justify-center px-6">
           <div class={NEW_SESSION_CONTENT_WIDTH}>
             <NewSessionWordmark
-              ref={(box) => setWordmark("box", box)}
+              ref={setLogo}
+              state={wordmark}
+              onEvent={dispatchWordmark}
+              play
               sound={settings.sounds.interfaceEnabled}
-              onOpen={() => setWordmark("mode", "open")}
-              onClose={() => setWordmark("mode", "closing")}
-              onFlat={() => setWordmark("mode", "flat")}
-              onPlay={(ball) => {
-                handles.ball = ball
-                setWordmark("game", true)
-              }}
             />
             <div class="mt-8 flex flex-col gap-3">
               <div data-slot="new-session-composer" class="flex flex-col gap-1">
@@ -137,28 +137,25 @@ export function NewSessionView(props: {
             </div>
           </div>
         </div>
-        <Show when={wordmark.mode !== "flat" && wordmark.box}>
-          {(logo) => (
+        <Show when={selectPinBoard(wordmark(), logo())}>
+          {(board) => (
             <NewSessionPinBoard
-              logo={logo()}
+              logo={board().logo}
               sound={settings.sounds.interfaceEnabled}
-              entrance="chain"
-              closing={wordmark.mode === "closing"}
-              ref={(board) => (handles.board = board)}
+              entrance={board().entrance}
+              closing={board().closing}
+              ref={(handle) => dispatchWordmark({ type: "board.mounted", board: handle })}
             />
           )}
         </Show>
-        <Show when={wordmark.game && handles.board && handles.ball && { board: handles.board, ball: handles.ball }}>
+        <Show when={selectBrickBreaker(wordmark())}>
           {(game) => (
             <NewSessionBrickBreaker
               panel={panel}
               board={game().board}
               ball={game().ball}
               sound={settings.sounds.interfaceEnabled}
-              onDone={() => {
-                setWordmark("game", false)
-                props.composer.restoreFocus()
-              }}
+              onDone={() => dispatchWordmark({ type: "game.done" })}
             />
           )}
         </Show>
@@ -292,18 +289,22 @@ function NewSessionLocation(props: {
 }) {
   const language = useLanguage()
   const command = useCommand()
+  const params = useSessionRouteParams()
   const [layout, setLayout] = createStore({ width: 0, font: "" })
 
-  command.register("new-session-worktree", () => [
-    {
-      id: "session.location.select",
-      title: language.t("session.location.worktree"),
-      category: language.t("command.category.workspace"),
-      keybind: "mod+alt+o",
-      disabled: !props.onWorktree,
-      onSelect: props.onWorktree,
-    },
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("new-session-worktree", () => [
+      {
+        id: "session.location.select",
+        title: language.t("session.location.worktree"),
+        category: language.t("command.category.workspace"),
+        keybind: "mod+alt+o",
+        disabled: !props.onWorktree,
+        onSelect: props.onWorktree,
+      },
+    ])
+  })
 
   const worktree = () => {
     if (props.workspace === "main") return

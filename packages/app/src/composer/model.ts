@@ -24,13 +24,16 @@ import { Session } from "@opencode/schema/session"
 import { abort } from "@opencode/util/abort"
 import { parseSessionMention } from "@opencode/util/session-mention"
 import { createKnownServerSessions, createServerSessionEntries } from "@/shell/commands/palette"
-import { matchesSessionTitle } from "./session-match"
+import { rankSessionTitle } from "./session-match"
+import { useTabs } from "@/shell/tabs/tabs"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import type { ComposerAdapter, ComposerControls, ComposerQueue } from "./adapter"
 import { isAttachment } from "./prompt-parts"
 import { isCommentItem } from "./state"
 import type { PromptHistoryComment } from "./history/entry"
 import { createComposerHistory } from "./history/store"
 import { createComposerSubmit } from "./submit"
+import { composerSubmitView } from "./machine"
 import { useAttachmentDestination } from "./attachments/destination"
 import { parseClientSlashCommand } from "./client-slash-command"
 
@@ -61,6 +64,8 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
   const language = useLanguage()
   const platform = usePlatform()
   const serverSDK = useServerSDK()
+  const tabs = useTabs()
+  const routeParams = useSessionRouteParams()
   const prompt = adapter.state
   // Editor actions write the captured store directly, rather than going through the context methods.
   createEffect(
@@ -93,8 +98,9 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
   const history = createComposerHistory()
 
   const recent = createMemo(() => {
-    const all = plugins.files.opened()
-    const active = plugins.files.active()
+    const session = `${server.key}\n${routeParams.id}`
+    const all = plugins.files.opened(session)
+    const active = plugins.files.active(session)
 
     return active ? [active, ...all.filter((path) => path !== active)] : all
   })
@@ -214,7 +220,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
 
   const sessions = createServerSessionEntries({
     server: server.key,
-    known: createKnownServerSessions(server.ctx),
+    known: createKnownServerSessions(() => server.ctx),
     projects: server.ctx.projects.list,
     load: async (search, signal) => {
       const page = await serverSDK.api.session.list({ parentID: null, search, archived: false, limit: 50 }, { signal })
@@ -231,7 +237,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
     untitled: () => language.t("command.session.new"),
     category: () => language.t("command.category.session"),
     recentCategory: () => language.t("palette.group.recentSessions"),
-    recentLimit: 50,
+    recentLimit: Number.POSITIVE_INFINITY,
   })
 
   const context = createMemo<ComposerSuggestion[]>(() => [
@@ -354,6 +360,8 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
     },
   })
 
+  const submitView = createMemo(() => composerSubmitView(submission.state()))
+
   const controller = createComposerEditor({
     store: prompt.store,
     state: interaction,
@@ -385,32 +393,52 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
         )
       }
 
+      const project = sdk().current?.project.id
+
+      const open = new Set(
+        tabs.store.flatMap((tab) => (tab.type === "session" && tab.server === server.key ? [tab.sessionId] : [])),
+      )
+
       return sessions
-        .items(search)
-        .filter((entry) => !query || matchesSessionTitle(entry.title, query))
-        .flatMap((entry): ComposerSuggestion[] => {
+        .items("")
+        .flatMap((entry) => {
           if (adapter.kind === "active-session" && entry.sessionID === adapter.session().id) return []
           const mention = entry.sessionID && parseSessionMention(entry.sessionID)
 
           if (!mention) return []
+          const local = !project || entry.project?.id === project || entry.directory === sdk().directory
 
-          return [
-            {
-              id: `session:${mention.id}`,
-              kind: "session",
-              label: entry.title,
-              description: entry.description,
-              mention: {
-                type: "session",
-                id: Session.ID.make(mention.id),
-                content: `@${entry.title}`,
-                start: 0,
-                end: 0,
-              },
+          // A bare `@` offers this project's recent sessions; other projects appear once a title is typed.
+          if (!query && !local) return []
+          const rank = query ? rankSessionTitle(entry.title, query) : 0
+
+          if (rank === undefined) return []
+
+          const suggestion: ComposerSuggestion = {
+            id: `session:${mention.id}`,
+            kind: "session",
+            label: entry.title,
+            description: entry.description,
+            mention: {
+              type: "session",
+              id: Session.ID.make(mention.id),
+              content: `@${entry.title}`,
+              start: 0,
+              end: 0,
             },
-          ]
+          }
+
+          return [{ suggestion, local, rank, open: open.has(mention.id), updated: entry.updated ?? 0 }]
         })
-        .slice(0, query ? 8 : 5)
+        .toSorted(
+          (a, b) =>
+            Number(b.local) - Number(a.local) ||
+            a.rank - b.rank ||
+            Number(b.open) - Number(a.open) ||
+            b.updated - a.updated,
+        )
+        .slice(0, 5)
+        .map((item) => item.suggestion)
     },
     sessionsPending: (query) => sessionSearched() !== firstWord(query),
     searchContextFiles: async (query, signal) =>
@@ -458,7 +486,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
         return
       }
 
-      if (item?.type === "file") openComment(item, links, plugins.current(), files, comments)
+      if (item?.type === "file") openComment(item, links, plugins.current(), comments)
     },
     onEditor(element) {
       // SAFETY: the editor's only `setEditor` call passes its editable root, a `<div>` (`editor/editor.tsx`).
@@ -481,6 +509,11 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
       directory: () => sdk().directory,
       destination: useAttachmentDestination(adapter.controls),
       isDialogActive: () => !!dialog.active,
+      owns: (event) =>
+        !routeParams.split ||
+        (event.target instanceof Element &&
+          event.target.closest("[data-session-pane-body]")?.getAttribute("data-session-pane-body") ===
+            routeParams.paneId),
       duplicate: () => showToast({ title: language.t("prompt.toast.attachmentDuplicate.title") }),
       onUploadError: (error) =>
         showToast({
@@ -533,14 +566,19 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
       submit: {
         available,
         stopping,
-        held: submission.held,
+        held: () => submitView().held,
+        busy: () => submitView().busy,
+        canSubmit: () => submitView().canSubmit,
         working: adapter.working,
         queue: options?.queue,
         quote:
           adapter.kind === "active-session"
             ? {
                 available: () =>
-                  available() && !adapter.controls().model.loading && !submission.held() && !options?.queue?.undoing(),
+                  available() &&
+                  !adapter.controls().model.loading &&
+                  submitView().canSubmit &&
+                  !options?.queue?.undoing(),
                 delivery: () => (adapter.working() ? (options?.queue?.alternate() ?? "steer") : undefined),
                 onSubmit: submission.submitQuote,
               }
@@ -569,39 +607,42 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
 
   Object.defineProperty(controller, "model", { get: () => adapter.controls().model })
 
-  command.register("composer-editor", () => [
-    {
-      id: "file.attach",
-      title: language.t("prompt.action.attachFile"),
-      category: language.t("command.category.file"),
-      keybind: "mod+u",
-      editable: true,
-      disabled: controller.state.mode !== "normal",
-      onSelect: () => controller.attach(),
-    },
-    {
-      id: "prompt.mode.toggle",
-      title: language.t("command.prompt.mode.toggle"),
-      category: language.t("command.category.session"),
-      keybind: "mod+shift+x",
-      onSelect: () =>
-        void controller.dispatch({ type: controller.state.mode === "normal" ? "mode.shell" : "mode.normal" }),
-    },
-    {
-      id: "prompt.mode.shell",
-      title: language.t("command.prompt.mode.shell"),
-      category: language.t("command.category.session"),
-      disabled: controller.state.mode === "shell",
-      onSelect: () => void controller.dispatch({ type: "mode.shell" }),
-    },
-    {
-      id: "prompt.mode.normal",
-      title: language.t("command.prompt.mode.normal"),
-      category: language.t("command.category.session"),
-      disabled: controller.state.mode === "normal",
-      onSelect: () => void controller.dispatch({ type: "mode.normal" }),
-    },
-  ])
+  createEffect(() => {
+    if (!routeParams.focused) return
+    command.register("composer-editor", () => [
+      {
+        id: "file.attach",
+        title: language.t("prompt.action.attachFile"),
+        category: language.t("command.category.file"),
+        keybind: "mod+u",
+        editable: true,
+        disabled: controller.state.mode !== "normal",
+        onSelect: () => controller.attach(),
+      },
+      {
+        id: "prompt.mode.toggle",
+        title: language.t("command.prompt.mode.toggle"),
+        category: language.t("command.category.session"),
+        keybind: "mod+shift+x",
+        onSelect: () =>
+          void controller.dispatch({ type: controller.state.mode === "normal" ? "mode.shell" : "mode.normal" }),
+      },
+      {
+        id: "prompt.mode.shell",
+        title: language.t("command.prompt.mode.shell"),
+        category: language.t("command.category.session"),
+        disabled: controller.state.mode === "shell",
+        onSelect: () => void controller.dispatch({ type: "mode.shell" }),
+      },
+      {
+        id: "prompt.mode.normal",
+        title: language.t("command.prompt.mode.normal"),
+        category: language.t("command.category.session"),
+        disabled: controller.state.mode === "normal",
+        onSelect: () => void controller.dispatch({ type: "mode.normal" }),
+      },
+    ])
+  })
 
   // SAFETY: the `model` getter defined on the controller above completes `ComposerModel`.
   return controller as ComposerModel
@@ -625,31 +666,13 @@ function openComment(
   item: { path: string; commentID?: string; commentOrigin?: "review" | "file" },
   links: Links,
   session: MountedSession | undefined,
-  files: ReturnType<typeof useFile>,
   comments: ReturnType<typeof useComments>,
 ) {
   if (!item.commentID) return
-  const focus = { file: item.path, id: item.commentID }
-  comments.setActive(focus)
-
-  const queueFocus = (attempts = 6) => {
-    requestAnimationFrame(() => {
-      comments.setFocus({ ...focus })
-
-      if (attempts <= 0) return
-      requestAnimationFrame(() => {
-        const current = comments.focus()
-
-        if (current?.file === focus.file && current.id === focus.id) queueFocus(attempts - 1)
-      })
-    })
-  }
-
   // The plugin that owns the comment's origin reveals it (the review diff or a file tab), keeping the conversation.
+  // It opens first, so a preview it replaces unmounts before the request, which then waits for the view to answer.
   links.open({ href: item.path, origin: item.commentOrigin, exact: true, background: true, session })
-
-  if (item.commentOrigin === "review") return queueFocus()
-  void Promise.resolve(files.load(item.path)).finally(() => queueFocus())
+  comments.open({ file: item.path, id: item.commentID })
 }
 
 function firstWord(query: string) {
