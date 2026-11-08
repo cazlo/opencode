@@ -10,17 +10,18 @@ import { useI18n } from "@opencode/ui/context/i18n"
 import { File } from "@opencode/session-ui/file"
 import { Markdown } from "@opencode/session-ui/markdown"
 import type { SessionMessageInfo } from "@opencode/client/promise"
-import { lastAssistantWithUsage } from "@opencode/client/solid"
+import { compactionThreshold, contextPercent, contextTokens, lastAssistantWithUsage } from "@opencode/client/solid"
 import { createKeyed, usePlugin, type MountedSession } from "@opencode/plugin/gui"
 import { catalogModel, syncCatalog } from "./catalog"
 import { fetchSessionExport, sessionExportFilename } from "./export"
 import { createSessionContextFormatter } from "./format"
+import { SessionContextUsageChart } from "./usage-chart"
 
 function Stat(props: { label: string; value: JSX.Element }) {
   return (
-    <div class="flex flex-col gap-1">
-      <div class="text-12-regular text-text-weak">{props.label}</div>
-      <div class="text-12-medium text-text-strong">{props.value}</div>
+    <div class="flex min-w-0 flex-col gap-0.5">
+      <div class="truncate text-12-regular text-text-weak">{props.label}</div>
+      <div class="truncate text-12-medium text-text-strong tabular-nums">{props.value}</div>
     </div>
   )
 }
@@ -88,6 +89,21 @@ export default function SessionContextTab(props: { session: MountedSession }) {
 
   const info = createMemo(() => (props.session.id ? data().session.get(props.session.id) : undefined))
 
+  createKeyed(
+    () => {
+      const id = props.session.id
+
+      return id && data().session.message.more(id) ? id : undefined
+    },
+    (id) => {
+      const controller = new AbortController()
+      onCleanup(() => controller.abort())
+      void data()
+        .session.message.loadMore(id, { all: true, signal: controller.signal })
+        .catch(() => undefined)
+    },
+  )
+
   const messages = createMemo(
     () => {
       const id = props.session.id
@@ -114,13 +130,8 @@ export default function SessionContextTab(props: { session: MountedSession }) {
 
     if (!message) return
     const entry = catalogModel(props.session, message.model)
-
-    const total =
-      message.tokens.input +
-      message.tokens.output +
-      message.tokens.reasoning +
-      message.tokens.cache.read +
-      message.tokens.cache.write
+    const total = contextTokens(message.tokens)
+    const threshold = compactionThreshold(entry?.model?.limit)
 
     return {
       message,
@@ -128,9 +139,33 @@ export default function SessionContextTab(props: { session: MountedSession }) {
       providerLabel: entry?.provider.name ?? message.model.providerID,
       modelLabel: entry?.model?.name ?? message.model.id,
       limit: entry?.model?.limit.context,
+      threshold,
       input: message.tokens.input,
       total,
-      usage: entry?.model?.limit.context ? Math.round((total / entry.model.limit.context) * 100) : null,
+      // Measured against the compaction threshold, the point where usage actually runs out.
+      usage: contextPercent(total, threshold) ?? null,
+    }
+  })
+
+  const fallbackModel = createMemo(() => {
+    const c = context()
+
+    if (c) {
+      return {
+        limit: c.limit,
+        threshold: c.threshold,
+      }
+    }
+
+    const ref = info()?.model ?? messages().findLast((item) => item.type === "assistant")?.model
+
+    if (!ref) return
+
+    const entry = catalogModel(props.session, ref)
+
+    return {
+      limit: entry?.model?.limit.context,
+      threshold: compactionThreshold(entry?.model?.limit),
     }
   })
 
@@ -178,14 +213,19 @@ export default function SessionContextTab(props: { session: MountedSession }) {
     return c.modelLabel
   })
 
+  const lastActivityTime = createMemo(
+    () => context()?.message.time.completed ?? context()?.message.time.created ?? info()?.time.updated,
+  )
+
   const stats = [
-    { label: "stats.session", value: () => info()?.title ?? (props.session.id || "—") },
-    { label: "stats.messages", value: () => counts().all.toLocaleString(i18n.locale()) },
-    { label: "stats.provider", value: providerLabel },
-    { label: "stats.model", value: modelLabel },
-    { label: "stats.limit", value: () => formatter().number(context()?.limit) },
-    { label: "stats.totalTokens", value: () => formatter().number(context()?.total) },
     { label: "stats.usage", value: () => formatter().percent(context()?.usage) },
+    { label: "stats.totalTokens", value: () => formatter().number(context()?.total) },
+    { label: "stats.compactionThreshold", value: () => formatter().number(fallbackModel()?.threshold) },
+    { label: "stats.limit", value: () => formatter().number(fallbackModel()?.limit) },
+    { label: "stats.totalCost", value: cost },
+    { label: "stats.sessionDuration", value: () => formatter().duration(info()?.time.created, lastActivityTime()) },
+    { label: "stats.sessionCreated", value: () => formatter().time(info()?.time.created) },
+    { label: "stats.lastActivity", value: () => formatter().time(lastActivityTime()) },
     { label: "stats.inputTokens", value: () => formatter().number(context()?.input) },
     { label: "stats.outputTokens", value: () => formatter().number(context()?.tokens.output) },
     { label: "stats.reasoningTokens", value: () => formatter().number(context()?.tokens.reasoning) },
@@ -194,11 +234,12 @@ export default function SessionContextTab(props: { session: MountedSession }) {
       value: () =>
         `${formatter().number(context()?.tokens.cache.read)} / ${formatter().number(context()?.tokens.cache.write)}`,
     },
+    { label: "stats.messages", value: () => counts().all.toLocaleString(i18n.locale()) },
     { label: "stats.userMessages", value: () => counts().user.toLocaleString(i18n.locale()) },
     { label: "stats.assistantMessages", value: () => counts().assistant.toLocaleString(i18n.locale()) },
-    { label: "stats.totalCost", value: cost },
-    { label: "stats.sessionCreated", value: () => formatter().time(info()?.time.created) },
-    { label: "stats.lastActivity", value: () => formatter().time(context()?.message.time.created) },
+    { label: "stats.provider", value: providerLabel },
+    { label: "stats.model", value: modelLabel },
+    { label: "stats.session", value: () => info()?.title ?? (props.session.id || "—") },
   ] satisfies { label: string; value: () => JSX.Element }[]
 
   const exportSession = async () => {
@@ -291,8 +332,27 @@ export default function SessionContextTab(props: { session: MountedSession }) {
       }}
       onScroll={handleScroll}
     >
-      <div data-slot="session-usage-content" class="px-4 pt-4 pb-6 flex flex-col gap-6 md:px-6 md:pb-10 md:gap-10">
-        <div class="grid grid-cols-1 @[32rem]:grid-cols-2 gap-4">
+      <div data-slot="session-usage-content" class="px-4 pt-4 pb-6 flex flex-col gap-5 md:px-6 md:pb-10 md:gap-6">
+        <SessionContextUsageChart
+          messages={messages()}
+          revertMessageID={info()?.revert?.messageID}
+          limit={fallbackModel()?.limit}
+          threshold={fallbackModel()?.threshold}
+          formatTokens={formatter().compactTokens}
+          formatPercent={formatter().percent}
+          formatTime={formatter().time}
+          labels={{
+            title: ctx.t("chart.title"),
+            empty: ctx.t("chart.empty"),
+            header: (input) => ctx.t("chart.header", input),
+            usage: (input) => ctx.t(input.ceiling && input.percent ? "chart.usage" : "chart.usage.tokens", input),
+            threshold: (input) => ctx.t(input.percent ? "chart.threshold" : "chart.threshold.tokens", input),
+            compacted: (count) => ctx.plural("chart.compacted", count),
+            limit: (input) => ctx.t("chart.limit", input),
+          }}
+        />
+
+        <div class="grid grid-cols-2 @[20rem]:grid-cols-3 @[28rem]:grid-cols-4 gap-x-3 gap-y-2.5">
           <For each={stats}>{(stat) => <Stat label={ctx.t(stat.label)} value={stat.value()} />}</For>
         </div>
 

@@ -4,7 +4,7 @@ import { Button } from "@opencode/ui/button"
 import { Menu } from "@opencode/ui/menu"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { useI18n } from "@opencode/ui/context/i18n"
-import { lastAssistantWithUsage } from "@opencode/client/solid"
+import { compactionThreshold, contextPercent, contextTokens, lastAssistantWithUsage } from "@opencode/client/solid"
 import { usePlugin, type MountedSession } from "@opencode/plugin/gui"
 import { catalogModel, syncCatalog } from "./catalog"
 
@@ -49,18 +49,13 @@ export function SessionContextUsage(props: {
     const message = lastAssistantWithUsage(messages(), info()?.revert?.messageID)
 
     if (!message) return
-    const model = catalogModel(props.session, message.model)?.model
-
-    const total =
-      message.tokens.input +
-      message.tokens.output +
-      message.tokens.reasoning +
-      message.tokens.cache.read +
-      message.tokens.cache.write
+    const total = contextTokens(message.tokens)
 
     return {
       total,
-      usage: model?.limit.context ? Math.round((total / model.limit.context) * 100) : null,
+      // Measured against the compaction threshold, the point where usage actually runs out.
+      usage:
+        contextPercent(total, compactionThreshold(catalogModel(props.session, message.model)?.model?.limit)) ?? null,
     }
   })
 
