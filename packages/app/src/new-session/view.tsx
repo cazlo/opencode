@@ -1,10 +1,11 @@
 import { useDialog } from "@opencode/ui/context/dialog"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { Icon } from "@opencode/ui/icon"
 import { Slash } from "@opencode/ui/slash"
 import { Keybind } from "@opencode/ui/keybind"
 import { useCommand } from "@/shell/commands/command"
-import { Show, createMemo, createSignal, untrack, type JSX } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, untrack, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { getFilename } from "@opencode/util/path"
@@ -288,18 +289,22 @@ function NewSessionLocation(props: {
 }) {
   const language = useLanguage()
   const command = useCommand()
+  const params = useSessionRouteParams()
   const [layout, setLayout] = createStore({ width: 0, font: "" })
 
-  command.register("new-session-worktree", () => [
-    {
-      id: "session.location.select",
-      title: language.t("session.location.worktree"),
-      category: language.t("command.category.workspace"),
-      keybind: "mod+alt+o",
-      disabled: !props.onWorktree,
-      onSelect: props.onWorktree,
-    },
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("new-session-worktree", () => [
+      {
+        id: "session.location.select",
+        title: language.t("session.location.worktree"),
+        category: language.t("command.category.workspace"),
+        keybind: "mod+alt+o",
+        disabled: !props.onWorktree,
+        onSelect: props.onWorktree,
+      },
+    ])
+  })
 
   const worktree = () => {
     if (props.workspace === "main") return

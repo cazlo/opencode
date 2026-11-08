@@ -1,4 +1,5 @@
 import { useCommand } from "@/shell/commands/command"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { useLanguage } from "@/runtime/i18n/language"
 import { useData } from "@/runtime/server/current"
 import { createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js"
@@ -33,10 +34,33 @@ function supportsHighlights() {
   return !!globalThis.CSS?.highlights
 }
 
-function clearHighlights() {
+// Every pane's controller shares the global highlight names, so each owner contributes its own ranges and the
+// shared Highlights are rebuilt from the union.
+const owners = new Map<symbol, { hits: Range[]; active: Range[] }>()
+
+function setHighlights(owner: symbol, ranges: { hits: Range[]; active: Range[] }) {
+  owners.set(owner, ranges)
+  syncHighlights()
+}
+
+function clearHighlights(owner: symbol) {
+  if (!owners.delete(owner)) return
+  syncHighlights()
+}
+
+function syncHighlights() {
   if (!supportsHighlights()) return
-  CSS.highlights.delete(HIGHLIGHT_HIT)
-  CSS.highlights.delete(HIGHLIGHT_ACTIVE)
+
+  if (owners.size === 0) {
+    CSS.highlights.delete(HIGHLIGHT_HIT)
+    CSS.highlights.delete(HIGHLIGHT_ACTIVE)
+
+    return
+  }
+
+  const all = Array.from(owners.values())
+  CSS.highlights.set(HIGHLIGHT_HIT, new Highlight(...all.flatMap((item) => item.hits)))
+  CSS.highlights.set(HIGHLIGHT_ACTIVE, new Highlight(...all.flatMap((item) => item.active)))
 }
 
 function collectRanges(
@@ -92,15 +116,14 @@ function collectRanges(
 }
 
 function applyHighlights(
+  owner: symbol,
   root: HTMLElement,
   query: string,
   activePartID: string | undefined,
   activeOccurrence: number | undefined,
 ) {
   if (!supportsHighlights()) return
-  const { hits, active } = collectRanges(root, query, activePartID, activeOccurrence)
-  CSS.highlights.set(HIGHLIGHT_HIT, new Highlight(...hits))
-  CSS.highlights.set(HIGHLIGHT_ACTIVE, new Highlight(...active))
+  setHighlights(owner, collectRanges(root, query, activePartID, activeOccurrence))
 }
 
 export function createTimelineSearchController(input: {
@@ -110,6 +133,7 @@ export function createTimelineSearchController(input: {
   pauseAutoScroll: () => void
 }) {
   const command = useCommand()
+  const params = useSessionRouteParams()
   const language = useLanguage()
   const data = useData()
   const [searchState, setSearchState] = createSignal(createTimelineSearchState())
@@ -119,6 +143,7 @@ export function createTimelineSearchController(input: {
   const searching = createMemo(() => query() !== "")
   const activePartID = createMemo(() => view().activePartID)
   const activeOccurrence = createMemo(() => view().activeOccurrence)
+  const owner = Symbol("timeline-search")
   let inputEl: HTMLInputElement | undefined
   let focusFrame: number | undefined
   let seekFrame: number | undefined
@@ -158,19 +183,19 @@ export function createTimelineSearchController(input: {
     const q = query()
 
     if (!root || !q) {
-      clearHighlights()
+      clearHighlights(owner)
 
       return
     }
 
-    applyHighlights(root, q, activePartID(), activeOccurrence())
+    applyHighlights(owner, root, q, activePartID(), activeOccurrence())
     let frame: number | undefined
 
     const scheduleApply = () => {
       if (frame !== undefined) return
       frame = requestAnimationFrame(() => {
         frame = undefined
-        applyHighlights(root, query(), activePartID(), activeOccurrence())
+        applyHighlights(owner, root, query(), activePartID(), activeOccurrence())
       })
     }
 
@@ -180,21 +205,27 @@ export function createTimelineSearchController(input: {
       observer.disconnect()
 
       if (frame !== undefined) cancelAnimationFrame(frame)
-      clearHighlights()
+      clearHighlights(owner)
     })
   })
 
-  onCleanup(() => dispatch({ type: "disposed" }))
+  onCleanup(() => {
+    clearHighlights(owner)
+    dispatch({ type: "disposed" })
+  })
 
-  command.register("session.search", () => [
-    {
-      id: "session.search",
-      title: language.t("session.search.placeholder"),
-      keybind: "mod+f",
-      hidden: true,
-      onSelect: open,
-    },
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("session.search", () => [
+      {
+        id: "session.search",
+        title: language.t("session.search.placeholder"),
+        keybind: "mod+f",
+        hidden: true,
+        onSelect: open,
+      },
+    ])
+  })
 
   function open() {
     dispatch({ type: "open", sessionID: untrack(input.sessionID) })

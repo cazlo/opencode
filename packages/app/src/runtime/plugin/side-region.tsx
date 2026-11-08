@@ -90,11 +90,15 @@ export function SideRegion(props: {
   )
 
   const lowerHeight = createMemo(() => Math.round(column.height * (1 - view().split.ratio())))
+  const paneMinHeight = createMemo(() => Math.min(PANE_HEIGHT_MIN, Math.max(44, Math.floor(column.height * 0.15))))
 
   guardClosingFocus({
     root,
     closing: () => !tabsOpen() && tabsVisible(),
-    target: () => document.querySelector<HTMLElement>('[data-slot="session-review-toggle"] button') ?? undefined,
+    target: () =>
+      root()?.closest("[data-pane-row]")?.querySelector<HTMLElement>('[data-slot="session-review-toggle"] button') ??
+      document.querySelector<HTMLElement>('[data-slot="session-review-toggle"] button') ??
+      undefined,
   })
 
   return (
@@ -141,8 +145,8 @@ export function SideRegion(props: {
                           direction="vertical"
                           edge="start"
                           size={lowerHeight()}
-                          min={PANE_HEIGHT_MIN}
-                          max={Math.max(PANE_HEIGHT_MIN, column.height - PANE_HEIGHT_MIN)}
+                          min={paneMinHeight()}
+                          max={Math.max(paneMinHeight(), column.height - paneMinHeight())}
                           onResize={(height) => {
                             props.size.touch()
 
@@ -388,6 +392,27 @@ export function PaneTabs(props: {
                 }}
               >
                 {language.t("session.tab.closeOthers")}
+              </Menu.Item>
+              <Menu.Separator />
+              <Menu.Item
+                disabled={
+                  props.pane.id === "side" || props.region.entry(tabMenu.key)?.tab.draggable === false
+                }
+                onSelect={() => tabs().move(tabMenu.key, "side")}
+              >
+                {language.t("common.splitUp")}
+              </Menu.Item>
+              <Menu.Item
+                disabled={
+                  (props.pane.id === "split" && props.pane.keys().length <= 1) ||
+                  (props.pane.id === "side" &&
+                    props.pane.keys().length <= 1 &&
+                    props.region.pane("split").keys().length === 0) ||
+                  props.region.entry(tabMenu.key)?.tab.draggable === false
+                }
+                onSelect={() => tabs().move(tabMenu.key, "split")}
+              >
+                {language.t("common.splitDown")}
               </Menu.Item>
             </Menu.Content>
           </Menu.Portal>

@@ -1,4 +1,5 @@
 import { For, Show, batch, createEffect, createMemo, onCleanup, onMount, type Component } from "solid-js"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { createStore } from "solid-js/store"
 import { Button } from "@opencode/ui/button"
 import { IconButton } from "@opencode/ui/icon-button"
@@ -273,6 +274,7 @@ function Option(props: {
 export const SessionQuestionDockExperimental: Component<{ request: FormInfo; onSubmit: () => void }> = (props) => {
   const language = useLanguage()
   const command = useCommand()
+  const params = useSessionRouteParams()
 
   const form = createQuestionDock({
     sdk: useServerSDK(),
@@ -371,7 +373,10 @@ export const SessionQuestionDockExperimental: Component<{ request: FormInfo; onS
   const measure = () => {
     if (!root) return
 
-    const scroller = document.querySelector('[data-slot="session-timeline-scroll"] > .scroll-view__viewport')
+    const scroller = (root.closest("[data-session-pane-body]") ?? document).querySelector(
+      '[data-slot="session-timeline-scroll"] > .scroll-view__viewport',
+    )
+
     const head = scroller instanceof HTMLElement ? scroller.firstElementChild : undefined
 
     // The timeline starts under its sticky header, or at its own top when it has none.
@@ -505,10 +510,15 @@ export const SessionQuestionDockExperimental: Component<{ request: FormInfo; onS
     }
 
     const dock = root?.closest('[data-component="session-composer-dock"]')
-    const scroller = document.querySelector('[data-slot="session-timeline-scroll"] > .scroll-view__viewport')
+
+    const scroller = (root?.closest("[data-session-pane-body]") ?? document).querySelector(
+      '[data-slot="session-timeline-scroll"] > .scroll-view__viewport',
+    )
+
     createResizeObserver([dock, scroller], requestMeasure)
 
-    focus(pickFocus())
+    // A dock mounting in a background pane must not pull focus, or the pane would steal the route from the user's typing.
+    if (params.focused) focus(pickFocus())
   })
 
   createEffect(() => {
@@ -1000,18 +1010,21 @@ export const SessionQuestionDockExperimental: Component<{ request: FormInfo; onS
     motionTuning.action({ id: "question.back", label: "Previous question", group, subsection, run: () => cycle(-1) }),
   )
 
-  command.register("session.question.back", () => [
-    {
-      id: "session.question.back",
-      title: language.t("ui.common.back"),
-      keybind: IS_MAC ? "mod+[" : "alt+arrowleft",
-      hidden: true,
-      // Stay registered while sending so the shortcut does not fall through to history navigation.
-      disabled: form.tab() <= 0,
-      when: () => form.tab() > 0,
-      onSelect: back,
-    },
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("session.question.back", () => [
+      {
+        id: "session.question.back",
+        title: language.t("ui.common.back"),
+        keybind: IS_MAC ? "mod+[" : "alt+arrowleft",
+        hidden: true,
+        // Stay registered while sending so the shortcut does not fall through to history navigation.
+        disabled: form.tab() <= 0,
+        when: () => form.tab() > 0,
+        onSelect: back,
+      },
+    ])
+  })
 
   const minimize = () => {
     if (sending()) return

@@ -16,6 +16,7 @@ import { fetchSessionExport, saveSessionExport, sessionExportFilename } from "@/
 import { usePlatform } from "@/runtime/platform/platform"
 import type { SessionModel } from "@/session/model"
 import type { SessionRevert } from "@/session/revert"
+import { hasVisibleSessionMessages } from "@/session/session-domain"
 import { usePluginClaims, usePluginScoped } from "@/runtime/plugin/commands"
 import type { Region } from "@/runtime/plugin/panels"
 import { sideTabShortcuts } from "@/runtime/plugin/closed-tabs"
@@ -40,7 +41,7 @@ const WINDOW_BLUR: CloseTabGuardEvent = { type: "window.blur" }
 type SessionCommandSource = {
   identity: SessionModel["identity"]
   data: Pick<SessionModel["data"], "info">
-  history: Pick<SessionModel["history"], "visibleUserMessages">
+  history: Pick<SessionModel["history"], "messages" | "visibleUserMessages">
   layout: SessionModel["layout"]
   ownership: SessionModel["ownership"]
 }
@@ -128,8 +129,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   createEventListener(
     document,
     "keydown",
-    (event) =>
-      dispatchCloseGuard({ type: "key.down", key: event.key, matchesClose: command.matches("file.close", event) }),
+    (event) => {
+      if (!actions.session.identity.params.focused) return
+      dispatchCloseGuard({ type: "key.down", key: event.key, matchesClose: command.matches("file.close", event) })
+    },
     { capture: true },
   )
   createEffect(
@@ -148,7 +151,13 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
         ? target
         : document.activeElement
 
-    return element instanceof Element && !!element.closest("#review-panel") && !pluginScoped(element)
+    const panel = actions.region.reviewPanel?.()
+
+    return (
+      element instanceof Element &&
+      (panel ? panel.contains(element) : !!element.closest("#review-panel")) &&
+      !pluginScoped(element)
+    )
   }
 
   const selectionPreview = (path: string, selection: FileSelection) => {
@@ -382,7 +391,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   // With nothing left to close, ⌘W closes the side panel itself, as an editor closes the focused pane before the window.
   const closeTab = () => {
     if (actions.region.closeNewTab(focusedPane())) {
-      const panel = document.getElementById("review-panel")
+      const panel = actions.region.reviewPanel?.() ?? document.getElementById("review-panel")
 
       // A launcher row that held focus is gone; focus stays in the panel so closing it next returns focus. Closing the
       // strip's last New tab closes the panel too, which already gave focus back.
@@ -409,7 +418,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const selectSideTab = (key: string) => {
     actions.region.select(key)
 
-    const panel = document.getElementById("review-panel")
+    const panel = actions.region.reviewPanel?.() ?? document.getElementById("review-panel")
 
     if (!panel) return
 
@@ -500,6 +509,17 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     if (sessionID) dispatchCommands({ type: "fork.requested", sessionID })
   }
 
+  const hasVisibleMessages = () =>
+    hasVisibleSessionMessages(actions.session.history.messages(), actions.session.data.info()?.revert?.messageID)
+
+  const canForkSession = () => {
+    const sessionID = actions.session.identity.params.id
+
+    if (!sessionID) return false
+
+    return actions.session.history.visibleUserMessages().length > 0 || data.session.message.more(sessionID)
+  }
+
   const sessionCmds = () => [
     sessionCommand({
       id: "session.new",
@@ -528,7 +548,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.compact"),
       description: language.t("command.session.compact.description"),
       slash: "compact",
-      disabled: !actions.session.identity.params.id || actions.session.history.visibleUserMessages().length === 0,
+      disabled: !actions.session.identity.params.id || !hasVisibleMessages(),
       onSelect: compact,
     }),
     sessionCommand({
@@ -543,7 +563,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.fork"),
       description: language.t("command.session.fork.description"),
       slash: "fork",
-      disabled: !actions.session.identity.params.id || actions.session.history.visibleUserMessages().length === 0,
+      disabled: !canForkSession(),
       onSelect: fork,
     }),
     sessionCommand({
@@ -733,14 +753,17 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     }),
   ]
 
-  command.register("session", () => [
-    ...sessionCmds(),
-    ...projectCmds(),
-    ...fileCmds(),
-    ...contextCmds(),
-    ...viewCmds(),
-    ...messageCmds(),
-    ...mcpCmds(),
-    ...permissionsCmds(),
-  ])
+  createEffect(() => {
+    if (!actions.session.identity.params.focused) return
+    command.register("session", () => [
+      ...sessionCmds(),
+      ...projectCmds(),
+      ...fileCmds(),
+      ...contextCmds(),
+      ...viewCmds(),
+      ...messageCmds(),
+      ...mcpCmds(),
+      ...permissionsCmds(),
+    ])
+  })
 }

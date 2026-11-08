@@ -114,6 +114,20 @@ test.each<{ name: string; run: () => SessionTabs; expected: SessionTabs }>([
     expected: { all: [A, T2, T1], active: T2, panes: { [T1]: "bottom" }, selected: { side: T2, bottom: T1 } },
   },
   {
+    name: "moving the last split tab back to the side pane collapses the split pane across writeTabs placement",
+    run: () => {
+      const current: SessionTabs = {
+        all: [A, T1],
+        active: T1,
+        panes: { [T1]: "split" },
+        selected: { side: A, split: T1 },
+      }
+
+      return placeSessionTabs(current, moveSessionTab(current, T1, "side"))
+    },
+    expected: { all: [A, T1], active: T1, selected: { side: T1 } },
+  },
+  {
     name: "a new tab joins the pane of its plugin's last tab",
     run: () =>
       placeSessionTabs({ all: [A, T1], active: T1, panes: { [T1]: "bottom" } }, { all: [A, T1, T2], active: T2 }),

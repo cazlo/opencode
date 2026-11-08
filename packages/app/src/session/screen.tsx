@@ -21,7 +21,6 @@ import { MessageTimeline } from "@/session/timeline/message-timeline"
 import { ComposerDropzone } from "@/composer/dropzone"
 import { useSettings } from "@/settings/model"
 import type { SessionModel } from "@/session/model"
-import { SESSION_PANEL_WIDTH_MIN } from "@/session/session-panel-width"
 import { useLayout } from "@/shell/state/layout"
 import { SessionPanelFrame } from "@/session/session-frame"
 import { PluginLinks } from "@/runtime/plugin/render"
@@ -89,6 +88,7 @@ function SessionScreenContent(props: {
   const isDesktop = session.isDesktop
   const bottomMobileTabs = () => settings.general.mobileTitlebarPosition() === "bottom"
   const sidebar = createPanelSidebar()
+  let screenRoot: HTMLDivElement | undefined
 
   const region = createRegion({
     region: "side",
@@ -106,6 +106,7 @@ function SessionScreenContent(props: {
       sideMotion.sync(false)
     },
     settled: (run) => sideMotion.whenSettled(run),
+    root: () => screenRoot,
   })
 
   onCleanup(attachment.region(region))
@@ -123,6 +124,7 @@ function SessionScreenContent(props: {
 
         if (target.pane === "bottom") session.layout.view().bottom.setOpened(true)
       }),
+    root: () => screenRoot,
   })
 
   const screen = createSessionScreenLayout(session, {
@@ -477,7 +479,10 @@ function SessionScreenContent(props: {
 
   return (
     <>
-      <div class="flex-1 min-h-0 flex flex-col gap-2 px-[var(--shell-inline-inset,8px)] pb-[var(--shell-bottom-inset,8px)] pt-[var(--shell-top-inset,8px)]">
+      <div
+        ref={screenRoot}
+        class="flex-1 min-h-0 flex flex-col gap-2 px-[var(--shell-inline-inset,8px)] pb-[var(--shell-bottom-inset,8px)] pt-[var(--shell-top-inset,8px)]"
+      >
         <div ref={screen.panel.ref} data-pane-row class="relative flex-1 min-h-0 flex flex-col md:flex-row gap-2">
           {/* Keep the control outside panel animations. */}
           <Show when={isDesktop() && messagesReady() && session.identity.params.id}>
@@ -522,7 +527,7 @@ function SessionScreenContent(props: {
                 class="-end-1"
                 direction="horizontal"
                 size={screen.panel.resizedWidth()}
-                min={SESSION_PANEL_WIDTH_MIN}
+                min={screen.panel.min()}
                 max={screen.panel.max()}
                 onResize={(width) => {
                   screen.size.touch()

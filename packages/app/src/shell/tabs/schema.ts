@@ -69,6 +69,22 @@ export const ClosedTab = Persistence.struct({
 
 export const Closed = Persistence.array(ClosedTab)
 
+export const SplitBranch = Persistence.struct({
+  id: Schema.String,
+  direction: Schema.Literals(["horizontal", "vertical"]),
+  ratio: Schema.Finite,
+  first: Schema.String,
+  second: Schema.String,
+})
+
+export const Splits = Persistence.struct({
+  root: Schema.String,
+  splits: Persistence.array(SplitBranch),
+  activePane: Schema.String,
+  panes: Persistence.record(Schema.String),
+  selected: Persistence.record(Schema.String),
+})
+
 /** A tab keeps its route only when it differs from the session, and the route's parent only with the route. */
 function withRoute(tab: typeof Session.Type) {
   const base = { type: tab.type, server: tab.server, sessionId: tab.sessionId }

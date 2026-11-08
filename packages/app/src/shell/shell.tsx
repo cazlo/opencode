@@ -16,6 +16,7 @@ import { COMMAND_SEARCH_ID, useCommand } from "@/shell/commands/command"
 import { useLanguage } from "@/runtime/i18n/language"
 import { useGlobal } from "@/runtime/server/runtime"
 import { useServers } from "@/runtime/server/registry"
+import { SessionPaneDragProvider } from "@/shell/tabs/session-pane-drag"
 import { useTabs } from "@/shell/tabs/tabs"
 import {
   CollapsedSidebarToggle,
@@ -206,9 +207,10 @@ export default function Layout(props: ParentProps) {
   const dragInset = () => windowDragEnabled(platform) && !mobile()
 
   return (
-    <div
-      class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text"
-      style={{
+    <SessionPaneDragProvider>
+      <div
+        class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text"
+        style={{
         // Mobile panels only need clearance for their outer border.
         "--shell-inline-inset": mobile() ? "1px" : "8px",
         "--session-header-inset-end": verticalTabs() ? "10px" : "12px",
@@ -323,6 +325,7 @@ export default function Layout(props: ParentProps) {
       <PluginSlot at="window.bottom" input={{}} />
       <ToastRegion />
       <UploadToastHost />
-    </div>
+      </div>
+    </SessionPaneDragProvider>
   )
 }

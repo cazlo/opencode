@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js"
 import { isPermissionNotFoundError, type FormInfo, type PermissionRequest } from "@opencode/client/promise"
 import { abort } from "@opencode/util/abort"
-import { useParams } from "@solidjs/router"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { showToast } from "@/shell/notifications/toast"
 import { useServerSDK } from "@/runtime/server/client"
 import { useLanguage } from "@/runtime/i18n/language"
@@ -26,7 +26,7 @@ import {
 } from "./permission-machine"
 
 export function createSessionRequestModel() {
-  const params = useParams()
+  const params = useSessionRouteParams()
   const sdk = useWorkspaceLocation()
   const serverSDK = useServerSDK()
   const data = useData()

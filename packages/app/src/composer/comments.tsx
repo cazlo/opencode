@@ -1,8 +1,8 @@
 import { batch, createMemo, createRoot, createSignal, onCleanup, untrack } from "solid-js"
 import { createStore, reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import { createSimpleContext } from "@opencode/ui/context"
-import { useParams } from "@solidjs/router"
 import { base64Encode } from "@opencode/util/encode"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { Persist, persisted } from "@/runtime/persistence/storage"
 import { useServerSDK } from "@/runtime/server/client"
 import type { ServerScope } from "@/runtime/server/scope"
@@ -224,7 +224,7 @@ export const { use: useComments, provider: CommentsProvider } = createSimpleCont
   name: "Comments",
   gate: false,
   init: () => {
-    const params = useParams()
+    const params = useSessionRouteParams()
     const sdk = useWorkspaceLocation()
     const serverSDK = useServerSDK()
 

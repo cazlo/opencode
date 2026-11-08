@@ -7,6 +7,7 @@ import type { RegionEntry } from "@/runtime/plugin/panels"
 import { panelKey } from "@/runtime/plugin/panel-keys"
 import {
   clampSessionPanelWidth,
+  SESSION_PANEL_WIDTH_MIN,
   SIDE_PANE_WIDTH_MIN,
   sessionPanelWidthCss,
   sessionPanelWidthMax,
@@ -57,19 +58,50 @@ export function createSessionScreenLayout(
     return width - 8
   })
 
+  const panelMin = createMemo(() => {
+    const width = available()
+
+    if (width === undefined || width >= 960) return SESSION_PANEL_WIDTH_MIN
+
+    return Math.min(SESSION_PANEL_WIDTH_MIN, Math.max(180, Math.floor(width * 0.2)))
+  })
+
+  const sideMin = createMemo(() => {
+    const width = available()
+
+    if (width === undefined || width >= 960) return SIDE_PANE_WIDTH_MIN
+
+    return Math.min(SIDE_PANE_WIDTH_MIN, Math.max(180, Math.floor(width * 0.2)))
+  })
+
   const splitSide = createMemo(() => tabsOpen() && input.wide())
 
   const resizedWidth = createMemo(() => {
     const current = sized()
     const width = available()
+    const min = panelMin()
+    const sMin = sideMin()
 
-    if (current && width !== undefined)
+    if (current && width !== undefined) {
+      if (width < 960) {
+        const max = Math.max(min, width - sMin)
+
+        return Math.min(Math.max(min, width - Math.max(sMin, current.width)), max)
+      }
+
       return clampSessionPanelWidth({
         width: width - Math.max(SIDE_PANE_WIDTH_MIN, current.width),
         available: width,
         split: splitSide(),
         resized: true,
       })
+    }
+
+    if (width !== undefined && width < 960 && view().session.resized()) {
+      const max = Math.max(min, width - sMin)
+
+      return Math.min(Math.max(min, view().session.width()), max)
+    }
 
     return clampSessionPanelWidth({
       width: view().session.width(),
@@ -82,8 +114,21 @@ export function createSessionScreenLayout(
   const panelWidth = createMemo(() => {
     if (!tabsOpen()) return "100%"
     const current = sized()
+    const width = available()
+    const min = panelMin()
+    const sMin = sideMin()
 
-    if (current) return sidePanelWidthCss(current.width)
+    if (current) {
+      if (width !== undefined && width < 960) {
+        return `max(${min}px, min(${width - sMin}px, 100% - ${Math.max(sMin, current.width) + 8}px))`
+      }
+
+      return sidePanelWidthCss(current.width)
+    }
+
+    if (width !== undefined && width < 960 && view().session.resized()) {
+      return `max(${min}px, min(${view().session.width()}px, 100% - ${sMin + 8}px))`
+    }
 
     return sessionPanelWidthCss({
       width: view().session.width(),
@@ -96,6 +141,8 @@ export function createSessionScreenLayout(
     const width = available()
 
     if (width === undefined) return 1000
+
+    if (width < 960) return Math.max(panelMin(), width - sideMin())
 
     return sessionPanelWidthMax({ available: width, split: splitSide(), resized: true })
   })
@@ -118,6 +165,7 @@ export function createSessionScreenLayout(
   return {
     centered: createMemo(() => session.isDesktop()),
     panel: {
+      min: panelMin,
       max: panelMax,
       ref: (element: HTMLDivElement) => {
         row = element

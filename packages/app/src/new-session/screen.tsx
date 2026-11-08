@@ -2,6 +2,7 @@ import { createPromptProjectController } from "@/new-session/project/selector"
 import { useNewSessionLocationDialog } from "@/new-session/location/dialog"
 import { useTabs, type DraftTab } from "@/shell/tabs/tabs"
 import { useLayout } from "@/shell/state/layout"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { useSearchParams } from "@solidjs/router"
 import { createEffect, createMemo, createResource, on, untrack } from "solid-js"
 import { createComposerModel } from "@/composer/model"
@@ -15,21 +16,22 @@ import { createDraftMcpControls } from "./mcp"
 /** The draft-only Session page. Submitting promotes the draft into a real Session. */
 export default function NewSessionPage(props: { draftId: string }) {
   const [search, setSearch] = useSearchParams<{ draftId?: string; prompt?: string }>()
+  const params = useSessionRouteParams()
   const tabs = useTabs()
   const layout = useLayout()
 
   const draftTab = createMemo(() =>
-    tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === search.draftId),
+    tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === props.draftId),
   )
 
   const workspace = createNewSessionWorkspaceController({
     selectedWorktree: () => draftTab()?.worktree,
     selectedBranch: () => draftTab()?.branch,
     setSelectedWorktree: (worktree) => {
-      if (search.draftId) tabs.updateDraft(search.draftId, { worktree })
+      tabs.updateDraft(props.draftId, { worktree })
     },
     setSelectedBranch: (branch) => {
-      if (search.draftId) tabs.updateDraft(search.draftId, { branch })
+      tabs.updateDraft(props.draftId, { branch })
     },
   })
 
@@ -74,8 +76,13 @@ export default function NewSessionPage(props: { draftId: string }) {
       if (!ready) return
 
       // Search projects opened this draft; the picker returns focus to the composer when it closes.
-      if (layout.draft.projectSearch.take(props.draftId)) location()
-      else model.restoreFocus()
+      if (layout.draft.projectSearch.take(props.draftId)) {
+        location()
+
+        return
+      }
+
+      if (params.focused) model.restoreFocus()
     }),
   )
   createEffect(() => {

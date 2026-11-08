@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import type { SessionInfo } from "@opencode/client/promise"
+import type { SessionInfo, SessionMessageInfo } from "@opencode/client/promise"
+import { hasVisibleSessionMessages } from "@/session/session-domain"
 import {
   createCloseTabGuardState,
   createSessionCommandsState,
@@ -96,6 +97,24 @@ describe("transitionSessionCommands", () => {
 
     expect(cancelled?.effects).toEqual([])
     expect(failed?.effects).toEqual([{ type: "toast.export-failed", message: "timed out" }])
+  })
+
+  test("hasVisibleSessionMessages keeps /compact enabled when tail page contains only assistant steps", () => {
+    const assistantOnly: SessionMessageInfo[] = [
+      {
+        id: "msg_02",
+        type: "assistant",
+        agent: "build",
+        model: { id: "gpt-5", providerID: "openai" },
+        content: [],
+        time: { created: 1000, completed: 1100 },
+      },
+    ]
+
+    expect(hasVisibleSessionMessages([])).toBe(false)
+    expect(hasVisibleSessionMessages(assistantOnly)).toBe(true)
+    expect(hasVisibleSessionMessages(assistantOnly, "msg_03")).toBe(true)
+    expect(hasVisibleSessionMessages(assistantOnly, "msg_02")).toBe(false)
   })
 
   test("leaving the session screen aborts exports and silences late results", () => {

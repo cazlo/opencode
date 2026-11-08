@@ -139,13 +139,18 @@ export function createModifierHeld(modifier: ClosedTabsModifier) {
  * Whether a key event belongs to the side panel: its target is in it, or, when the target is the body because closing
  * the focused tab dropped focus, the user's last focus, click or key was. `focused` reads that last answer.
  */
-export function createSideFocus() {
+export function createSideFocus(root?: () => HTMLElement | undefined) {
   const [last, setLast] = createSignal(false)
-  createEventListener(document, ["focusin", "pointerdown", "keydown"], (event) => setLast(inSide(event, last())), {
-    capture: true,
-  })
+  createEventListener(
+    document,
+    ["focusin", "pointerdown", "keydown"],
+    (event) => setLast(inSide(event, last(), root?.())),
+    {
+      capture: true,
+    },
+  )
 
-  return Object.assign((event: Event) => inSide(event, last()), { focused: last })
+  return Object.assign((event: Event) => inSide(event, last(), root?.()), { focused: last })
 }
 
 /** As in a browser: inside the side panel, ⌘1–8 select that side tab, ⌘9 the last one, and ⇧⌘[ and ⇧⌘] the previous and next. */
@@ -179,11 +184,15 @@ export function sideTabShortcuts(input: {
   ]
 }
 
-function inSide(event: Event, fallback: boolean) {
+function inSide(event: Event, fallback: boolean, root?: HTMLElement) {
   const target = event.target
 
   const placed =
     target instanceof Element && target !== document.body && target !== document.documentElement && target.isConnected
 
-  return placed ? !!target.closest("#review-panel") : fallback
+  if (!placed) return fallback
+
+  if (root && !root.contains(target)) return false
+
+  return !!target.closest("#review-panel")
 }

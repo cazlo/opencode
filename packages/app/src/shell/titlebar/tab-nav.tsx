@@ -35,6 +35,10 @@ export type TabCloseActions = {
   onClose: () => void
   onCloseOthers?: () => void
   onCloseAfter?: () => void
+  onSplitLeft?: () => void
+  onSplitRight?: () => void
+  onSplitUp?: () => void
+  onSplitDown?: () => void
 }
 
 function TabCloseMenuItems(props: TabCloseActions & { orientation?: "horizontal" | "vertical" }) {
@@ -54,6 +58,19 @@ function TabCloseMenuItems(props: TabCloseActions & { orientation?: "horizontal"
               ? "common.closeTabsToLeft"
               : "common.closeTabsToRight",
         )}
+      </Menu.Item>
+      <Menu.Separator />
+      <Menu.Item disabled={!props.onSplitLeft} onSelect={props.onSplitLeft}>
+        {language.t("common.splitLeft")}
+      </Menu.Item>
+      <Menu.Item disabled={!props.onSplitRight} onSelect={props.onSplitRight}>
+        {language.t("common.splitRight")}
+      </Menu.Item>
+      <Menu.Item disabled={!props.onSplitUp} onSelect={props.onSplitUp}>
+        {language.t("common.splitUp")}
+      </Menu.Item>
+      <Menu.Item disabled={!props.onSplitDown} onSelect={props.onSplitDown}>
+        {language.t("common.splitDown")}
       </Menu.Item>
     </>
   )
@@ -572,6 +589,10 @@ export function TabNavItem(
             onClose={props.onClose}
             onCloseOthers={props.onCloseOthers}
             onCloseAfter={props.onCloseAfter}
+            onSplitLeft={props.onSplitLeft}
+            onSplitRight={props.onSplitRight}
+            onSplitUp={props.onSplitUp}
+            onSplitDown={props.onSplitDown}
           />
           <Menu.Separator />
           <Menu.Item data-variant="critical" disabled={!props.session} onSelect={props.onDelete}>
@@ -711,6 +732,10 @@ export function DraftTabItem(
             onClose={props.onClose}
             onCloseOthers={props.onCloseOthers}
             onCloseAfter={props.onCloseAfter}
+            onSplitLeft={props.onSplitLeft}
+            onSplitRight={props.onSplitRight}
+            onSplitUp={props.onSplitUp}
+            onSplitDown={props.onSplitDown}
           />
         </Menu.Context.Content>
       </Menu.Context.Portal>

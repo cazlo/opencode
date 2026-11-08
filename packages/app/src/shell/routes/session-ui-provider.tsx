@@ -1,12 +1,13 @@
 import { DataProvider, type TurnDiffInput } from "@opencode/session-ui/context"
 import { MarkdownProvider, type ReadMarkdownImage } from "@opencode/session-ui/context/markdown"
-import { useNavigate, useParams } from "@solidjs/router"
+import { useNavigate } from "@solidjs/router"
 import { useQuery } from "@tanstack/solid-query"
 import { createMemo, onCleanup, untrack, type ParentProps } from "solid-js"
 import { useProviders } from "@/providers/catalog/providers"
 import { LocalProvider } from "@/providers/models/selection"
 import type { ServerConnection } from "@/runtime/server/registry"
 import { sessionHref } from "@/shell/routes/session"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { useData } from "@/runtime/server/current"
 import { useServerSDK } from "@/runtime/server/client"
 import { findSessionTab, useTabs } from "@/shell/tabs/tabs"
@@ -23,7 +24,7 @@ export function SessionUIProvider(
   }>,
 ) {
   const navigate = useNavigate()
-  const params = useParams()
+  const params = useSessionRouteParams()
   const data = useData()
   const serverSDK = useServerSDK()
   const tabs = useTabs()

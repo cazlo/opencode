@@ -167,7 +167,7 @@ export function createActiveSessionRegion(input: {
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.defaultPrevented) return
+    if (!input.session.identity.params.focused || event.defaultPrevented) return
     const path = event.composedPath()
     const target = path.find((item): item is HTMLElement => item instanceof HTMLElement)
     const active = activeElement()
@@ -320,14 +320,17 @@ export function createActiveSessionRegion(input: {
       return model ? { id: model.id, providerID: model.provider.id, variant: selection.variant.current() } : undefined
     },
   })
-  command.register("palette", () => [
-    {
-      id: "command.palette",
-      title: language.t("command.palette"),
-      hidden: true,
-      onSelect: () => command.trigger("file.open", "palette"),
-    },
-  ])
+  createEffect(() => {
+    if (!input.session.identity.params.focused) return
+    command.register("palette", () => [
+      {
+        id: "command.palette",
+        title: language.t("command.palette"),
+        hidden: true,
+        onSelect: () => command.trigger("file.open", "palette"),
+      },
+    ])
+  })
 
   const dock = {
     state,

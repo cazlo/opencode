@@ -1,3 +1,4 @@
+import { createEffect } from "solid-js"
 import { useCommand, type CommandOption } from "@/shell/commands/command"
 import { useLanguage } from "@/runtime/i18n/language"
 import { DialogSelectModel } from "@/providers/models/select-dialog"
@@ -90,58 +91,61 @@ export const useComposerCommands = (input: { model?: ModelSelection } = {}) => {
     ))
   }
 
-  command.register("composer", () => [
-    modelCommand({
-      id: "model.choose",
-      title: language.t("command.model.choose"),
-      description: language.t("command.model.choose.description"),
-      keybind: "mod+'",
-      slash: "model",
-      onSelect: chooseModel,
-    }),
-    modelCommand({
-      id: "model.variant.cycle",
-      title: language.t("command.model.variant.cycle"),
-      description: language.t("command.model.variant.cycle.description"),
-      keybind: "shift+mod+d",
-      onSelect: () => model.variant.cycle(),
-    }),
-    viewCommand({
-      id: "usage.view",
-      title: language.t("command.usage.view"),
-      description: language.t("command.usage.view.description"),
-      onSelect: () => void viewUsage(),
-    }),
-    providerCommand({
-      id: "provider.connect",
-      title: language.t("command.provider.connect"),
-      description: language.t("command.provider.connect.description"),
-      slash: "connect",
-      onSelect: connectProvider,
-    }),
-    serverCommand({
-      id: "config.reload",
-      title: language.t("command.config.reload"),
-      description: language.t("command.config.reload.description"),
-      slash: "reload",
-      onSelect: reloadConfig,
-    }),
-    agentCommand({
-      id: "agent.cycle",
-      title: language.t("command.agent.cycle"),
-      description: language.t("command.agent.cycle.description"),
-      keybind: "mod+.",
-      slash: "agent",
-      disabled: !local.agent.visible(),
-      onSelect: () => local.agent.move(1),
-    }),
-    agentCommand({
-      id: "agent.cycle.reverse",
-      title: language.t("command.agent.cycle.reverse"),
-      description: language.t("command.agent.cycle.reverse.description"),
-      keybind: "shift+mod+.",
-      disabled: !local.agent.visible(),
-      onSelect: () => local.agent.move(-1),
-    }),
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("composer", () => [
+      modelCommand({
+        id: "model.choose",
+        title: language.t("command.model.choose"),
+        description: language.t("command.model.choose.description"),
+        keybind: "mod+'",
+        slash: "model",
+        onSelect: chooseModel,
+      }),
+      modelCommand({
+        id: "model.variant.cycle",
+        title: language.t("command.model.variant.cycle"),
+        description: language.t("command.model.variant.cycle.description"),
+        keybind: "shift+mod+d",
+        onSelect: () => model.variant.cycle(),
+      }),
+      viewCommand({
+        id: "usage.view",
+        title: language.t("command.usage.view"),
+        description: language.t("command.usage.view.description"),
+        onSelect: () => void viewUsage(),
+      }),
+      providerCommand({
+        id: "provider.connect",
+        title: language.t("command.provider.connect"),
+        description: language.t("command.provider.connect.description"),
+        slash: "connect",
+        onSelect: connectProvider,
+      }),
+      serverCommand({
+        id: "config.reload",
+        title: language.t("command.config.reload"),
+        description: language.t("command.config.reload.description"),
+        slash: "reload",
+        onSelect: reloadConfig,
+      }),
+      agentCommand({
+        id: "agent.cycle",
+        title: language.t("command.agent.cycle"),
+        description: language.t("command.agent.cycle.description"),
+        keybind: "mod+.",
+        slash: "agent",
+        disabled: !local.agent.visible(),
+        onSelect: () => local.agent.move(1),
+      }),
+      agentCommand({
+        id: "agent.cycle.reverse",
+        title: language.t("command.agent.cycle.reverse"),
+        description: language.t("command.agent.cycle.reverse.description"),
+        keybind: "shift+mod+.",
+        disabled: !local.agent.visible(),
+        onSelect: () => local.agent.move(-1),
+      }),
+    ])
+  })
 }

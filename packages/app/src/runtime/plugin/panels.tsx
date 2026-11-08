@@ -84,27 +84,30 @@ const SidebarState = Persistence.struct({
  * the session screen that created it is mounted.
  */
 export function createPanelSidebar(): PanelSidebar {
-  const [store, setStore, , ready] = persisted(Persist.global("review-panel-v2"), SidebarState, {
-    sidebarOpened: true,
-    sidebarWidth: SESSION_REVIEW_V2_SIDEBAR_WIDTH_DEFAULT,
-    expandMode: "collapse",
+  // Every mounted screen shares one store; separate copies would each write their own stale values back.
+  const shared = usePluginAttachment().sidebar(() => {
+    const [store, setStore, , ready] = persisted(Persist.global("review-panel-v2"), SidebarState, {
+      sidebarOpened: true,
+      sidebarWidth: SESSION_REVIEW_V2_SIDEBAR_WIDTH_DEFAULT,
+      expandMode: "collapse",
+    })
+
+    return {
+      opened: () => store.sidebarOpened,
+      width: () => store.sidebarWidth,
+      transition: ready,
+      resize: (width) =>
+        setStore(
+          "sidebarWidth",
+          Math.min(SESSION_REVIEW_V2_SIDEBAR_WIDTH_MAX, Math.max(SESSION_REVIEW_V2_SIDEBAR_WIDTH_MIN, width)),
+        ),
+      toggle: () => setStore("sidebarOpened", (opened) => !opened),
+    }
   })
 
-  const sidebar: PanelSidebar = {
-    opened: () => store.sidebarOpened,
-    width: () => store.sidebarWidth,
-    transition: ready,
-    resize: (width) =>
-      setStore(
-        "sidebarWidth",
-        Math.min(SESSION_REVIEW_V2_SIDEBAR_WIDTH_MAX, Math.max(SESSION_REVIEW_V2_SIDEBAR_WIDTH_MIN, width)),
-      ),
-    toggle: () => setStore("sidebarOpened", (opened) => !opened),
-  }
+  onCleanup(shared.release)
 
-  onCleanup(usePluginAttachment().sidebar(sidebar))
-
-  return sidebar
+  return shared.value
 }
 
 /**
@@ -125,6 +128,8 @@ export function createRegion(input: {
   onEmptied?: () => void
   /** Runs work that forces a layout, like moving focus, once the region's open motion lands. */
   settled?: (run: () => void) => void
+  /** Optional root container scoping `#review-panel` queries to this session pane. */
+  root?: Accessor<HTMLElement | undefined>
 }) {
   const settled = input.settled ?? ((run: () => void) => run())
   // The text field focus left when the user opened the side region, which a close from inside it returns to.
@@ -331,9 +336,12 @@ export function createRegion(input: {
 
   const empty = createMemo(() => strip().length === 0)
 
+  const reviewPanel = () =>
+    input.root?.()?.querySelector<HTMLElement>("#review-panel") ?? document.getElementById("review-panel")
+
   // Focus leaves before the close starts, back to where it was; otherwise the panel hands it to its toggle.
   const giveBackFocus = () => {
-    const inside = !!document.getElementById("review-panel")?.contains(document.activeElement)
+    const inside = !!reviewPanel()?.contains(document.activeElement)
     const back = returnFocus
     returnFocus = undefined
 
@@ -385,8 +393,12 @@ export function createRegion(input: {
   const dismissNewTab = (id: string) => batch(() => dispatchNewTabs({ type: "dismiss", id, empty: untrack(empty) }))
 
   return {
+    /** The session key this region serves. */
+    sessionKey: () => input.view().key,
+    /** The `#review-panel` element inside this session pane. */
+    reviewPanel,
     /** Whether a key event belongs to the side region rather than the session around it. */
-    focus: createSideFocus(),
+    focus: createSideFocus(input.root),
     entries,
     /** The drawn strip of the pane that holds the selected tab, by key. */
     keys: () => panes[activePane()].keys(),
@@ -458,7 +470,7 @@ export function createRegion(input: {
 
       if (entry) entry.provider.enter?.(panelInput(input.view, input.screen, { tab: entry.tab }))
       settled(() => {
-        const root = document.getElementById("review-panel")
+        const root = reviewPanel()
 
         if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true, focusVisible: false })
       })

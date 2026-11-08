@@ -1,6 +1,5 @@
 import { ErrorBoundary, createEffect, createMemo, Match, on, Show, Switch, type ParentProps } from "solid-js"
 import { Title } from "@solidjs/meta"
-import { useParams } from "@solidjs/router"
 import { createStore } from "solid-js/store"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { DataProvider } from "@opencode/session-ui/context"
@@ -21,6 +20,7 @@ import { ServerConnection } from "@/runtime/server/registry"
 import { useSettingsCommand } from "@/settings/command"
 import { useSettings } from "@/settings/model"
 import { SessionUIProvider } from "@/shell/routes/session-ui-provider"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { useTabs, type PendingSession } from "@/shell/tabs/tabs"
 import { requireServerKey } from "@/shell/routes/session"
 import { ErrorPage } from "@/shell/errors/error"
@@ -36,22 +36,28 @@ import { PreparingComposer } from "./preparing-composer"
 import { ComposerFocusProvider } from "./composer/focus"
 
 export function TargetSessionRouteContent() {
-  const params = useParams<{ serverKey: string; id: string }>()
+  const params = useSessionRouteParams()
   const data = useData()
   const server = useServer()
   const tabs = useTabs()
-  const directory = createMemo(() => data.session.get(params.id)?.location.directory)
+  const sessionID = () => params.id ?? ""
+  const directory = createMemo(() => (sessionID() ? data.session.get(sessionID())?.location.directory : undefined))
 
   return (
     <>
       <MarkSessionViewed sessionID={() => params.id} />
-      <SessionDocumentTitle sessionID={() => params.id} />
+      <Show when={params.focused}>
+        <SessionDocumentTitle sessionID={sessionID} />
+      </Show>
       <ModelsProvider directory={directory()}>
         <TargetSessionSettingsCommand />
-        <SessionRouteErrorBoundary sessionID={params.id} serverKey={requireServerKey(params.serverKey)}>
-          <ComposerFocusProvider sessionID={params.id}>
-            <Show when={tabs.pendingSession(server.key, params.id)} fallback={<ResolvedTargetSessionRoute />}>
-              {(pending) => <PreparingSession sessionID={params.id} pending={pending()} />}
+        <SessionRouteErrorBoundary
+          sessionID={params.id}
+          serverKey={params.serverKey ? requireServerKey(params.serverKey) : server.key}
+        >
+          <ComposerFocusProvider sessionID={sessionID()}>
+            <Show when={sessionID() ? tabs.pendingSession(server.key, sessionID()) : undefined} fallback={<ResolvedTargetSessionRoute />}>
+              {(pending) => <PreparingSession sessionID={sessionID()} pending={pending()} />}
             </Show>
           </ComposerFocusProvider>
         </SessionRouteErrorBoundary>
@@ -132,10 +138,11 @@ function SessionRouteErrorBoundary(props: ParentProps<{ sessionID?: string; serv
 }
 
 function ResolvedTargetSessionRoute() {
-  const params = useParams<{ id: string }>()
+  const params = useSessionRouteParams()
   const server = useServer()
   const tabs = useTabs()
   const data = useData()
+  const sessionID = () => params.id ?? ""
 
   const resolution = createSessionResolution(
     () => params.id,
@@ -159,7 +166,9 @@ function ResolvedTargetSessionRoute() {
     return current.type === "error" ? current : undefined
   })
 
-  const closeTab = () => tabs.removeSessionTab({ server: server.key, sessionId: params.id })
+  const closeTab = () => {
+    if (sessionID()) tabs.removeSessionTab({ server: server.key, sessionId: sessionID() })
+  }
 
   return (
     <Switch>
@@ -178,7 +187,7 @@ function ResolvedTargetSessionRoute() {
       </Match>
       <Match when={view().type === "not-found"}>
         <SessionStatePanel>
-          <SessionNotFoundPanel sessionID={params.id} serverKey={server.key} />
+          <SessionNotFoundPanel sessionID={sessionID()} serverKey={server.key} />
         </SessionStatePanel>
       </Match>
       <Match when={failure()} keyed>
@@ -194,7 +203,7 @@ function ResolvedTargetSessionRoute() {
         </SessionStatePanel>
       </Match>
       <Match when={view().type === "resolving"}>
-        <PendingSessionState sessionID={params.id} />
+        <PendingSessionState sessionID={sessionID()} />
       </Match>
     </Switch>
   )

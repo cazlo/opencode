@@ -686,7 +686,12 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                   <Show
                     when={props.verticalTabs}
                     fallback={
-                      <>
+                      <Show
+                        when={
+                          !tabs.split.isSplit() ||
+                          (layout.route().type !== "session" && layout.route().type !== "draft")
+                        }
+                      >
                         <TitlebarTabStrip
                           tabs={tabsStore}
                           currentTab={currentTab()}
@@ -711,7 +716,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                             </>
                           }
                         />
-                      </>
+                      </Show>
                     }
                   >
                     {(vertical) => (

@@ -26,6 +26,7 @@ import { parseSessionMention } from "@opencode/util/session-mention"
 import { createKnownServerSessions, createServerSessionEntries } from "@/shell/commands/palette"
 import { rankSessionTitle } from "./session-match"
 import { useTabs } from "@/shell/tabs/tabs"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import type { ComposerAdapter, ComposerControls, ComposerQueue } from "./adapter"
 import { isAttachment } from "./prompt-parts"
 import { isCommentItem } from "./state"
@@ -64,6 +65,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
   const platform = usePlatform()
   const serverSDK = useServerSDK()
   const tabs = useTabs()
+  const routeParams = useSessionRouteParams()
   const prompt = adapter.state
   // Editor actions write the captured store directly, rather than going through the context methods.
   createEffect(
@@ -96,8 +98,9 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
   const history = createComposerHistory()
 
   const recent = createMemo(() => {
-    const all = plugins.files.opened()
-    const active = plugins.files.active()
+    const session = `${server.key}\n${routeParams.id}`
+    const all = plugins.files.opened(session)
+    const active = plugins.files.active(session)
 
     return active ? [active, ...all.filter((path) => path !== active)] : all
   })
@@ -506,6 +509,11 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
       directory: () => sdk().directory,
       destination: useAttachmentDestination(adapter.controls),
       isDialogActive: () => !!dialog.active,
+      owns: (event) =>
+        !routeParams.split ||
+        (event.target instanceof Element &&
+          event.target.closest("[data-session-pane-body]")?.getAttribute("data-session-pane-body") ===
+            routeParams.paneId),
       duplicate: () => showToast({ title: language.t("prompt.toast.attachmentDuplicate.title") }),
       onUploadError: (error) =>
         showToast({
@@ -599,39 +607,42 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
 
   Object.defineProperty(controller, "model", { get: () => adapter.controls().model })
 
-  command.register("composer-editor", () => [
-    {
-      id: "file.attach",
-      title: language.t("prompt.action.attachFile"),
-      category: language.t("command.category.file"),
-      keybind: "mod+u",
-      editable: true,
-      disabled: controller.state.mode !== "normal",
-      onSelect: () => controller.attach(),
-    },
-    {
-      id: "prompt.mode.toggle",
-      title: language.t("command.prompt.mode.toggle"),
-      category: language.t("command.category.session"),
-      keybind: "mod+shift+x",
-      onSelect: () =>
-        void controller.dispatch({ type: controller.state.mode === "normal" ? "mode.shell" : "mode.normal" }),
-    },
-    {
-      id: "prompt.mode.shell",
-      title: language.t("command.prompt.mode.shell"),
-      category: language.t("command.category.session"),
-      disabled: controller.state.mode === "shell",
-      onSelect: () => void controller.dispatch({ type: "mode.shell" }),
-    },
-    {
-      id: "prompt.mode.normal",
-      title: language.t("command.prompt.mode.normal"),
-      category: language.t("command.category.session"),
-      disabled: controller.state.mode === "normal",
-      onSelect: () => void controller.dispatch({ type: "mode.normal" }),
-    },
-  ])
+  createEffect(() => {
+    if (!routeParams.focused) return
+    command.register("composer-editor", () => [
+      {
+        id: "file.attach",
+        title: language.t("prompt.action.attachFile"),
+        category: language.t("command.category.file"),
+        keybind: "mod+u",
+        editable: true,
+        disabled: controller.state.mode !== "normal",
+        onSelect: () => controller.attach(),
+      },
+      {
+        id: "prompt.mode.toggle",
+        title: language.t("command.prompt.mode.toggle"),
+        category: language.t("command.category.session"),
+        keybind: "mod+shift+x",
+        onSelect: () =>
+          void controller.dispatch({ type: controller.state.mode === "normal" ? "mode.shell" : "mode.normal" }),
+      },
+      {
+        id: "prompt.mode.shell",
+        title: language.t("command.prompt.mode.shell"),
+        category: language.t("command.category.session"),
+        disabled: controller.state.mode === "shell",
+        onSelect: () => void controller.dispatch({ type: "mode.shell" }),
+      },
+      {
+        id: "prompt.mode.normal",
+        title: language.t("command.prompt.mode.normal"),
+        category: language.t("command.category.session"),
+        disabled: controller.state.mode === "normal",
+        onSelect: () => void controller.dispatch({ type: "mode.normal" }),
+      },
+    ])
+  })
 
   // SAFETY: the `model` getter defined on the controller above completes `ComposerModel`.
   return controller as ComposerModel

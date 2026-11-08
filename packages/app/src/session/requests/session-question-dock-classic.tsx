@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, onCleanup, onMount, type Component } from "solid-js"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { createStore } from "solid-js/store"
 import { Button } from "@opencode/ui/button"
 import { IconButton } from "@opencode/ui/icon-button"
@@ -117,6 +118,7 @@ function Option(props: {
 export const SessionQuestionDockClassic: Component<{ request: FormInfo; onSubmit: () => void }> = (props) => {
   const language = useLanguage()
   const command = useCommand()
+  const params = useSessionRouteParams()
 
   const form = createQuestionDock({
     sdk: useServerSDK(),
@@ -178,7 +180,10 @@ export const SessionQuestionDockClassic: Component<{ request: FormInfo; onSubmit
   const measure = () => {
     if (!root) return
 
-    const scroller = document.querySelector('[data-slot="session-timeline-scroll"] > .scroll-view__viewport')
+    const scroller = (root.closest("[data-session-pane-body]") ?? document).querySelector(
+      '[data-slot="session-timeline-scroll"] > .scroll-view__viewport',
+    )
+
     const head = scroller instanceof HTMLElement ? scroller.firstElementChild : undefined
 
     const top =
@@ -261,14 +266,19 @@ export const SessionQuestionDockClassic: Component<{ request: FormInfo; onSubmit
     }
 
     const dock = root?.closest('[data-component="session-composer-dock"]')
-    const scroller = document.querySelector('[data-slot="session-timeline-scroll"] > .scroll-view__viewport')
+
+    const scroller = (root?.closest("[data-session-pane-body]") ?? document).querySelector(
+      '[data-slot="session-timeline-scroll"] > .scroll-view__viewport',
+    )
+
     createResizeObserver([dock, scroller], update)
 
     onCleanup(() => {
       if (raf !== undefined) cancelAnimationFrame(raf)
     })
 
-    focus(pickFocus())
+    // A dock mounting in a background pane must not pull focus, or the pane would steal the route from the user's typing.
+    if (params.focused) focus(pickFocus())
   })
 
   createEffect(() => {
@@ -448,18 +458,21 @@ export const SessionQuestionDockClassic: Component<{ request: FormInfo; onSubmit
     if (!store.minimized) focus(pickFocus(tab))
   }
 
-  command.register("session.question.back", () => [
-    {
-      id: "session.question.back",
-      title: language.t("ui.common.back"),
-      keybind: IS_MAC ? "mod+[" : "alt+arrowleft",
-      hidden: true,
-      // Stay registered while sending so the shortcut does not fall through to history navigation.
-      disabled: form.tab() <= 0,
-      when: () => form.tab() > 0,
-      onSelect: back,
-    },
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("session.question.back", () => [
+      {
+        id: "session.question.back",
+        title: language.t("ui.common.back"),
+        keybind: IS_MAC ? "mod+[" : "alt+arrowleft",
+        hidden: true,
+        // Stay registered while sending so the shortcut does not fall through to history navigation.
+        disabled: form.tab() <= 0,
+        when: () => form.tab() > 0,
+        onSelect: back,
+      },
+    ])
+  })
 
   const minimize = () => {
     if (sending()) return

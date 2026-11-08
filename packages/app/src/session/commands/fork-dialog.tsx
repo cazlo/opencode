@@ -1,5 +1,5 @@
-import { Component, createMemo, For, Show } from "solid-js"
-import { useParams } from "@solidjs/router"
+import { Component, createEffect, createMemo, on, onCleanup, untrack, For, Show } from "solid-js"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { useData } from "@/runtime/server/current"
 import { useDialog } from "@opencode/ui/context/dialog"
 import { Dialog, DialogBody, DialogTitle, DialogTitleGroup } from "@opencode/ui/dialog"
@@ -25,7 +25,7 @@ function formatTime(date: Date): string {
 }
 
 export const DialogFork: Component = () => {
-  const params = useParams()
+  const params = useSessionRouteParams()
   const data = useData()
   const dialog = useDialog()
 
@@ -35,6 +35,23 @@ export const DialogFork: Component = () => {
     closing: () => dialog.closing,
     onClose: () => dialog.close(),
   })
+
+  const hasMore = createMemo(() => Boolean(params.id && data.session.message.more(params.id)))
+
+  createEffect(
+    on(
+      () => [params.id, hasMore()] as const,
+      ([sessionID, more]) => {
+        if (!sessionID || !more) return
+
+        const controller = new AbortController()
+        onCleanup(() => controller.abort())
+        void untrack(() => data.session.message.loadMore(sessionID, { all: true, signal: controller.signal })).catch(
+          () => undefined,
+        )
+      },
+    ),
+  )
 
   const messages = createMemo((): ForkableMessage[] => {
     const sessionID = params.id

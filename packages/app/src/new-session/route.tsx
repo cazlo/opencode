@@ -1,5 +1,6 @@
-import { Navigate, useSearchParams } from "@solidjs/router"
+import { Navigate } from "@solidjs/router"
 import { createMemo, ErrorBoundary, Show, type ParentProps } from "solid-js"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { CommentsProvider } from "@/composer/comments"
 import { FileProvider } from "@/workspaces/files/model"
 import { useGlobal } from "@/runtime/server/runtime"
@@ -17,21 +18,21 @@ import { ErrorPage } from "@/shell/errors/error"
 import { SessionPanelFrame, SessionRouteFrame } from "@/session/session-frame"
 
 export function DraftRoute() {
-  const [search] = useSearchParams<{ draftId?: string }>()
+  const params = useSessionRouteParams()
   const tabs = useTabs()
 
   return (
     <Show
-      when={tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === search.draftId)}
+      when={tabs.store.find((tab): tab is DraftTab => tab.type === "draft" && tab.draftID === params.draftId)}
       keyed
-      fallback={tabs.ready() && <Navigate href="/" />}
+      fallback={!params.split && tabs.ready() && <Navigate href="/" />}
     >
       {(draft) => <ResolvedDraftRoute draft={draft} />}
     </Show>
   )
 }
 
-function ResolvedDraftRoute(props: { draft: DraftTab }) {
+export function ResolvedDraftRoute(props: { draft: DraftTab }) {
   const global = useGlobal()
   const conn = createMemo(() => global.servers.list().find((item) => ServerConnection.key(item) === props.draft.server))
 

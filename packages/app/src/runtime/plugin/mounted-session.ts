@@ -409,7 +409,7 @@ export function createMountedSession(session: SessionModel) {
   createEffect(() =>
     batch(() => {
       onCleanup(attachment.screen(screen))
-      onCleanup(attachment.mount(mounted))
+      onCleanup(attachment.mount(mounted, screen))
     }),
   )
 

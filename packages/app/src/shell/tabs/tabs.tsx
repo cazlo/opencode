@@ -1,11 +1,21 @@
 import type { SessionInfo, SessionMessageUser } from "@opencode/client/promise"
 import type { ComposerSelection } from "@/composer/adapter"
 import { createSimpleContext } from "@opencode/ui/context"
-import { produce } from "solid-js/store"
+import { produce, reconcile } from "solid-js/store"
 import { Persist, persisted, removePersisted, draftPersistedKeys } from "@/runtime/persistence/storage"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { usePluginServers } from "@/runtime/plugin/servers"
-import { createEffect, createSignal, getOwner, onCleanup, startTransition, untrack, type Accessor } from "solid-js"
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  getOwner,
+  onCleanup,
+  startTransition,
+  untrack,
+  type Accessor,
+} from "solid-js"
 import type { NewSessionStartView } from "@/new-session/machine"
 import { useLocation, useNavigate } from "@solidjs/router"
 import { usePlatform } from "@/runtime/platform/platform"
@@ -41,6 +51,21 @@ import {
   type TabsHydrationEffect,
   type TabsHydrationEvent,
 } from "./hydration-machine"
+import {
+  INITIAL_SESSION_SPLIT_STATE,
+  buildSessionSplitTree,
+  canSplitSessionPaneWithTab,
+  listSessionSplitPanes,
+  mergeSessionPane,
+  moveTabToSessionPane,
+  reconcileSessionSplits,
+  replaceSessionSplitTabKey,
+  resizeSessionSplit,
+  sessionSplitStateEqual,
+  splitSessionPane,
+  type SessionSplitSide,
+  type SessionSplitState,
+} from "./split-tree"
 
 export type SessionTab = typeof TabStorage.Session.Type
 
@@ -110,7 +135,19 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     const [info, setInfo, , infoReady] = persisted(Persist.window("tabs.info"), TabStorage.Infos, {})
     const [regions, setRegions, , regionsReady] = persisted(Persist.window("tabs.panes"), TabStorage.Regions, {})
     const [closed, setClosed, , closedReady] = persisted(Persist.window("tabs.closed"), TabStorage.Closed, [])
+
+    const [splits, setSplits, , splitsReady] = persisted(
+      Persist.window("tabs.splits"),
+      TabStorage.Splits,
+      INITIAL_SESSION_SPLIT_STATE,
+    )
+
     const [promotion, setPromotion] = createSignal(INITIAL_TAB_PROMOTION_STATE)
+
+    const commitSplits = (next: SessionSplitState) => {
+      if (sessionSplitStateEqual(splits, next)) return
+      setSplits(reconcile(next))
+    }
 
     const navigate = useNavigate()
     const location = useLocation()
@@ -262,13 +299,15 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
         if (index === -1) return
         const route = currentRoute()
+        const draftKey = tabKey(effect.draft)
         setStore(
           produce((tabs) => {
             tabs[index] = effect.draft
           }),
         )
+        commitSplits(replaceSessionSplitTabKey(splits, effect.key, draftKey))
 
-        if (recentKey() === effect.key) setRecentKey(tabKey(effect.draft))
+        if (recentKey() === effect.key) setRecentKey(draftKey)
 
         if (route.type === "session" && tabMatchesRoute(effect.session, route)) navigateTab(effect.draft)
 
@@ -394,14 +433,91 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       )
     }
 
+    const openTabs = createMemo(() => {
+      const current = preview.current()
+
+      if (!current || store.some((tab) => tabKey(tab) === tabKey(current))) return store
+
+      return [...store, current]
+    })
+
+    const routedTab = createMemo(() => {
+      const route = currentRoute()
+
+      if (route.type !== "session" && route.type !== "draft") return undefined
+      const current = preview.current()
+
+      if (current && tabMatchesRoute(current, route)) return current
+
+      return store.find((tab) => tabMatchesRoute(tab, route))
+    })
+
+    const routedTabKey = createMemo(() => {
+      const tab = routedTab()
+
+      return tab ? tabKey(tab) : undefined
+    })
+
+    const splitTree = createMemo(() => buildSessionSplitTree(splits))
+    const splitPanes = createMemo(() => listSessionSplitPanes(splitTree()))
+    const isSplit = createMemo(() => splitPanes().length > 1)
+
+    createEffect(() => {
+      if (!ready() || !splitsReady()) return
+      const keys = openTabs().map(tabKey)
+      const next = reconcileSessionSplits(splits, keys, routedTabKey())
+      commitSplits(next)
+    })
+
+    const resolveTabPane = (key: string) => splits.panes[key] ?? splits.activePane
+
+    const paneTabs = (paneId: string) => {
+      const all = openTabs()
+
+      if (!isSplit()) return all
+
+      return all.filter((tab) => resolveTabPane(tabKey(tab)) === paneId)
+    }
+
+    const paneSelectedTab = (paneId: string) => {
+      const tabs = paneTabs(paneId)
+      const selectedKey = splits.selected[paneId]
+
+      return (selectedKey ? tabs.find((tab) => tabKey(tab) === selectedKey) : undefined) ?? tabs[0]
+    }
+
     // `abandon` names pending sessions that go with the tab for good, rather than staying revisitable after a close.
     const removeTab = (index: number, abandon: readonly string[] = []) => {
       const tab = store[index]
 
       if (!tab) return
 
-      // Closing the tab the route shows always moves the route, so nothing re-adds the tab for it.
-      const nextTab = nextTabAfterClose(store, index, !previewRoute() && tabMatchesRoute(tab, currentRoute()))
+      const active = !previewRoute() && tabMatchesRoute(tab, currentRoute())
+
+      const nextTab = (() => {
+        if (active && isSplit()) {
+          const paneId = resolveTabPane(tabKey(tab))
+          const inPane = store.filter((item) => resolveTabPane(tabKey(item)) === paneId)
+          const paneIndex = inPane.findIndex((item) => tabKey(item) === tabKey(tab))
+
+          if (inPane.length > 1 && paneIndex !== -1) {
+            return nextTabAfterClose(inPane, paneIndex, true)
+          }
+
+          const panes = splitPanes()
+          const panePos = panes.indexOf(paneId)
+          const fallbackPaneId = panes[panePos + 1] ?? panes[panePos - 1]
+          const fallbackKey = fallbackPaneId ? splits.selected[fallbackPaneId] : undefined
+
+          const fallbackTab = fallbackKey
+            ? store.find((item) => tabKey(item) === fallbackKey && tabKey(item) !== tabKey(tab))
+            : undefined
+
+          if (fallbackTab) return fallbackTab
+        }
+
+        return nextTabAfterClose(store, index, active)
+      })()
 
       void commitPromotion(
         () => ({ type: "abandon", keys: abandon }),
@@ -421,6 +537,25 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         },
       )
       disposeTab(tab)
+    }
+
+    // Inserts synchronously so a split or move can use the tab in the same batch.
+    // A preview is kept (leaving `openTabs`), and a tab not yet open is added from `open`.
+    const ensureOpen = (key: string, open?: Omit<SessionTab, "type">) => {
+      const currentPreview = preview.current()
+
+      const target =
+        currentPreview && tabKey(currentPreview) === key
+          ? currentPreview
+          : open && { type: "session" as const, ...open }
+
+      if (!target || tabKey(target) !== key) return
+
+      if (target === currentPreview) preview.keep(currentPreview)
+
+      if (store.some((tab) => tabKey(tab) === key)) return
+
+      setStore(produce((tabs) => void tabs.push(target)))
     }
 
     const actions = {
@@ -485,9 +620,27 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         setStore(
           produce((tabs) => {
             const byKey = new Map(tabs.map((tab) => [tabKey(tab), tab]))
-            const next = keys.flatMap((key) => byKey.get(key) ?? [])
+            const reordered = keys.flatMap((key) => byKey.get(key) ?? [])
 
-            if (next.length !== tabs.length) return
+            if (reordered.length <= 1) return
+
+            if (reordered.length === tabs.length) {
+              tabs.splice(0, tabs.length, ...reordered)
+
+              return
+            }
+
+            const keySet = new Set(reordered.map(tabKey))
+            let cursor = 0
+
+            const next = tabs.map((tab) => {
+              if (!keySet.has(tabKey(tab))) return tab
+              const replacement = reordered[cursor]
+              cursor += 1
+
+              return replacement ?? tab
+            })
+
             tabs.splice(0, tabs.length, ...next)
           }),
         )
@@ -569,6 +722,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
               tabs[index] = next
             }),
           )
+          commitSplits(replaceSessionSplitTabKey(splits, tabKey(draft), key))
 
           if (recentKey() === tabKey(draft)) setRecentKey(key)
 
@@ -867,8 +1021,138 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
 
         setRegions(key, size, value)
       },
+      split: {
+        state: () => splits,
+        tree: splitTree,
+        panes: splitPanes,
+        isSplit,
+        activePane: () => splits.activePane,
+        selected: () => splits.selected,
+        tabPane: resolveTabPane,
+        paneTabs,
+        paneSelectedTab,
+        canSplitWithTab(key: string, targetPaneId: string) {
+          return canSplitSessionPaneWithTab(splits, key, targetPaneId, openTabs().map(tabKey))
+        },
+        focusPane(paneId: string) {
+          const tab = paneSelectedTab(paneId)
+
+          if (!tab) return
+          const key = tabKey(tab)
+          commitSplits({
+            ...splits,
+            activePane: paneId,
+            selected: {
+              ...splits.selected,
+              [paneId]: key,
+            },
+          })
+
+          if (!tabMatchesRoute(tab, currentRoute())) {
+            navigateTab(tab)
+          }
+        },
+        selectInPane(paneId: string, tab: Tab) {
+          const key = tabKey(tab)
+          commitSplits({
+            ...splits,
+            activePane: paneId,
+            panes: {
+              ...splits.panes,
+              [key]: paneId,
+            },
+            selected: {
+              ...splits.selected,
+              [paneId]: key,
+            },
+          })
+          navigateTab(tab)
+        },
+        splitPane(
+          key: string,
+          targetPaneId: string,
+          side: SessionSplitSide,
+          fallbackSelected?: Readonly<Record<string, string>>,
+          open?: Omit<SessionTab, "type">,
+        ) {
+          // One batch: the reconcile effect must not see the tab missing from the store between the insert and the commit.
+          const allTabs = batch(() => {
+            ensureOpen(key, open)
+            const tabs = openTabs()
+
+            commitSplits(
+              splitSessionPane(splits, {
+                tabKey: key,
+                targetPaneId,
+                side,
+                newPaneId: uuid(),
+                splitId: uuid(),
+                tabKeys: tabs.map(tabKey),
+                fallbackSelected,
+              }),
+            )
+
+            return tabs
+          })
+
+          const targetTab = allTabs.find((item) => tabKey(item) === key)
+
+          if (targetTab && !tabMatchesRoute(targetTab, currentRoute())) {
+            navigateTab(targetTab)
+          }
+        },
+        moveTabToPane(
+          key: string,
+          targetPaneId: string,
+          beforeTabKey?: string,
+          fallbackSelected?: Readonly<Record<string, string>>,
+          open?: Omit<SessionTab, "type">,
+        ) {
+          const allTabs = batch(() => {
+            ensureOpen(key, open)
+            const tabs = openTabs()
+
+            const result = moveTabToSessionPane(splits, {
+              tabKey: key,
+              targetPaneId,
+              beforeTabKey,
+              tabKeys: tabs.map(tabKey),
+              fallbackSelected,
+            })
+
+            actions.reorder(result.orderedTabKeys)
+            commitSplits(result.state)
+
+            return tabs
+          })
+
+          const targetTab = allTabs.find((item) => tabKey(item) === key)
+
+          if (targetTab && !tabMatchesRoute(targetTab, currentRoute())) {
+            navigateTab(targetTab)
+          }
+        },
+        resizeSplit(splitId: string, ratio: number) {
+          commitSplits(resizeSessionSplit(splits, splitId, ratio))
+        },
+        unsplitPane(paneId: string) {
+          commitSplits(mergeSessionPane(splits, paneId, openTabs().map(tabKey), routedTabKey()))
+        },
+      },
     }
 
-    return { ...actions, store, info, closed, ready, infoReady, recentReady, recentKey, closedReady, regionsReady }
+    return {
+      ...actions,
+      store,
+      info,
+      closed,
+      ready,
+      infoReady,
+      recentReady,
+      recentKey,
+      closedReady,
+      regionsReady,
+      splitsReady,
+    }
   },
 })

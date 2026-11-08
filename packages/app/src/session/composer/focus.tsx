@@ -10,6 +10,7 @@ import {
 } from "solid-js"
 import { useDialog } from "@opencode/ui/context/dialog"
 import { setCursorPosition } from "@/composer/editor/dom"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import {
   createComposerFocusState,
   transitionComposerFocus,
@@ -30,7 +31,8 @@ const ComposerFocusContext = createContext<ComposerFocus>()
 
 // One machine for the session route, so focus outlives the pending composer until the session composer mounts.
 export function ComposerFocusProvider(props: ParentProps<{ sessionID: string }>) {
-  const focus = createComposerFocus()
+  const params = useSessionRouteParams()
+  const focus = createComposerFocus(() => params.focused)
 
   // A computation, not an effect: the target changes before the new session's composers mount and report to it.
   createComputed(() => focus.dispatch({ type: "target.changed", target: props.sessionID }))
@@ -55,7 +57,7 @@ export function isTitlebarTabLink(element: Element) {
   return element.matches("[data-titlebar-tab-link]") && !element.closest('[role="dialog"]')
 }
 
-function createComposerFocus() {
+function createComposerFocus(enabled?: Accessor<boolean>) {
   const dialog = useDialog()
   const [state, setState] = createSignal(createComposerFocusState())
   let frame: number | undefined
@@ -109,7 +111,10 @@ function createComposerFocus() {
   ): "focused" | "claimed" | "blocked" => {
     const element = surface?.target() === effect.target ? surface.element() : undefined
 
-    if (!element?.isConnected || surface?.editable?.() === false || dialog.active) return "blocked"
+    if (enabled?.() === false || !element?.isConnected || surface?.editable?.() === false || dialog.active) {
+      return "blocked"
+    }
+
     const active = document.activeElement
 
     // The user already put the caret in this composer.

@@ -1,4 +1,5 @@
 import { createComputed, createEffect, createSignal, onCleanup, Show, untrack } from "solid-js"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { createStore } from "solid-js/store"
 import { Popover } from "@kobalte/core/popover"
 import { makeEventListener } from "@solid-primitives/event-listener"
@@ -26,6 +27,7 @@ export function NewSessionBranch(props: { workspace: NewSessionWorkspaceControll
   const language = useLanguage()
 
   const command = useCommand()
+  const params = useSessionRouteParams()
 
   const [layout, setLayout] = createStore({ truncated: false })
 
@@ -82,16 +84,19 @@ export function NewSessionBranch(props: { workspace: NewSessionWorkspaceControll
 
   onCleanup(() => dispatch({ type: "disposed" }))
 
-  command.register("new-session-branch", () => [
-    {
-      id: "session.branch.choose",
-      title: language.t("command.session.branch.choose"),
-      category: language.t("command.category.workspace"),
-      keybind: "mod+alt+b",
-      disabled: !creating() || !props.workspace.bar.branch(),
-      onSelect: (source) => dispatch({ type: "command.select", source }),
-    },
-  ])
+  createEffect(() => {
+    if (!params.focused) return
+    command.register("new-session-branch", () => [
+      {
+        id: "session.branch.choose",
+        title: language.t("command.session.branch.choose"),
+        category: language.t("command.category.workspace"),
+        keybind: "mod+alt+b",
+        disabled: !creating() || !props.workspace.bar.branch(),
+        onSelect: (source) => dispatch({ type: "command.select", source }),
+      },
+    ])
+  })
 
   // Until content mounts, Kobalte has no dismissable layer to cancel a pending open.
   createEffect(() => {

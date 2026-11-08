@@ -24,6 +24,7 @@ import { useGlobal, useServerCtx, type ServerCtx } from "@/runtime/server/runtim
 import { useLanguage } from "@/runtime/i18n/language"
 import { useCommand } from "@/shell/commands/command"
 import { useTabs } from "@/shell/tabs/tabs"
+import { useSessionPaneDragOptional } from "@/shell/tabs/session-pane-drag"
 import { useSessionTabAvatarState } from "@/shell/layout/project-avatar-state"
 import { createTabComposerState } from "@/composer/persistence"
 import { base64Encode } from "@opencode/util/encode"
@@ -127,6 +128,10 @@ function SessionTabSlot(
         onClose={props.onClose}
         onCloseOthers={props.onCloseOthers}
         onCloseAfter={props.onCloseAfter}
+        onSplitLeft={props.onSplitLeft}
+        onSplitRight={props.onSplitRight}
+        onSplitUp={props.onSplitUp}
+        onSplitDown={props.onSplitDown}
         active={props.active}
         dragging={sortable.isDragSource()}
         orientation={props.orientation}
@@ -334,6 +339,10 @@ function SessionTabEntry(
         onClose={props.onClose}
         onCloseOthers={props.onCloseOthers}
         onCloseAfter={props.onCloseAfter}
+        onSplitLeft={props.onSplitLeft}
+        onSplitRight={props.onSplitRight}
+        onSplitUp={props.onSplitUp}
+        onSplitDown={props.onSplitDown}
         onIntent={hover}
       />
     </Show>
@@ -385,6 +394,10 @@ function DraftTabSlot(
         onClose={props.onClose}
         onCloseOthers={props.onCloseOthers}
         onCloseAfter={props.onCloseAfter}
+        onSplitLeft={props.onSplitLeft}
+        onSplitRight={props.onSplitRight}
+        onSplitUp={props.onSplitUp}
+        onSplitDown={props.onSplitDown}
         active={props.active}
         dragging={sortable.isDragSource()}
         orientation={props.orientation}
@@ -396,6 +409,7 @@ function DraftTabSlot(
 export function TitlebarTabStrip(props: {
   orientation?: "horizontal" | "vertical"
   highlightActive?: boolean
+  registerCommands?: boolean
   tabs: Tab[]
   currentTab: Tab | undefined
   onNavigate: (tab: Tab, el?: HTMLDivElement) => void
@@ -407,6 +421,7 @@ export function TitlebarTabStrip(props: {
   const language = useLanguage()
   const command = useCommand()
   const appTabs = useTabs()
+  const sessionPaneDrag = useSessionPaneDragOptional()
   const vertical = () => props.orientation === "vertical"
   let listRef!: HTMLDivElement
   let scrollRef!: HTMLDivElement
@@ -546,67 +561,70 @@ export function TitlebarTabStrip(props: {
     onCleanup(() => setSidebarUnread(false))
   })
 
-  command.register("titlebar-tab-cycle", () => [
-    {
-      id: `tab.prev`,
-      category: "tab",
-      title: "",
-      keybind: `mod+option+ArrowLeft,ctrl+shift+tab`,
-      hidden: true,
-      onSelect: () => selectAdjacentTab(-1),
-    },
-    {
-      id: `tab.next`,
-      category: "tab",
-      title: "",
-      keybind: `mod+option+ArrowRight,ctrl+tab`,
-      hidden: true,
-      onSelect: () => selectAdjacentTab(1),
-    },
-    {
-      ...previousSessionCommand,
-      category: language.t("command.category.session"),
-      title: language.t("command.session.previous"),
-      onSelect: () => selectAdjacentTab(-1),
-    },
-    {
-      ...nextSessionCommand,
-      category: language.t("command.category.session"),
-      title: language.t("command.session.next"),
-      onSelect: () => selectAdjacentTab(1),
-    },
-    {
-      id: "session.previous.unseen",
-      category: language.t("command.category.session"),
-      title: language.t("command.session.previous.unseen"),
-      keybind: "shift+alt+arrowup",
-      onSelect: () => selectAdjacentTab(-1, (key) => !!unread[key]),
-    },
-    {
-      id: "session.next.unseen",
-      category: language.t("command.category.session"),
-      title: language.t("command.session.next.unseen"),
-      keybind: "shift+alt+arrowdown",
-      onSelect: () => selectAdjacentTab(1, (key) => !!unread[key]),
-    },
-  ])
-
   // One registration numbers the visible tabs, so a reorder, a close or a tab coming into view never leaves two tabs
   // holding the same number while their owners update.
   const tabRefs = new Map<string, () => HTMLDivElement | undefined>()
 
-  command.register("titlebar-tab-numbers", () =>
-    visibleTabs()
-      .slice(0, 9)
-      .map((tab, index) => ({
-        id: `tab.${index + 1}`,
+  createEffect(() => {
+    if (props.registerCommands === false) return
+    command.register("titlebar-tab-cycle", () => [
+      {
+        id: `tab.prev`,
         category: "tab",
         title: "",
-        keybind: `mod+${index + 1}`,
+        keybind: `mod+option+ArrowLeft,ctrl+shift+tab`,
         hidden: true,
-        onSelect: () => props.onNavigate(tab, tabRefs.get(tabKey(tab))?.()),
-      })),
-  )
+        onSelect: () => selectAdjacentTab(-1),
+      },
+      {
+        id: `tab.next`,
+        category: "tab",
+        title: "",
+        keybind: `mod+option+ArrowRight,ctrl+tab`,
+        hidden: true,
+        onSelect: () => selectAdjacentTab(1),
+      },
+      {
+        ...previousSessionCommand,
+        category: language.t("command.category.session"),
+        title: language.t("command.session.previous"),
+        onSelect: () => selectAdjacentTab(-1),
+      },
+      {
+        ...nextSessionCommand,
+        category: language.t("command.category.session"),
+        title: language.t("command.session.next"),
+        onSelect: () => selectAdjacentTab(1),
+      },
+      {
+        id: "session.previous.unseen",
+        category: language.t("command.category.session"),
+        title: language.t("command.session.previous.unseen"),
+        keybind: "shift+alt+arrowup",
+        onSelect: () => selectAdjacentTab(-1, (key) => !!unread[key]),
+      },
+      {
+        id: "session.next.unseen",
+        category: language.t("command.category.session"),
+        title: language.t("command.session.next.unseen"),
+        keybind: "shift+alt+arrowdown",
+        onSelect: () => selectAdjacentTab(1, (key) => !!unread[key]),
+      },
+    ])
+
+    command.register("titlebar-tab-numbers", () =>
+      visibleTabs()
+        .slice(0, 9)
+        .map((tab, index) => ({
+          id: `tab.${index + 1}`,
+          category: "tab",
+          title: "",
+          keybind: `mod+${index + 1}`,
+          hidden: true,
+          onSelect: () => props.onNavigate(tab, tabRefs.get(tabKey(tab))?.()),
+        })),
+    )
+  })
 
   function selectAdjacentTab(offset: -1 | 1, include?: (key: string) => boolean) {
     const current = props.currentTab
@@ -676,19 +694,21 @@ export function TitlebarTabStrip(props: {
             props.onNavigate(tab, tabEl ?? undefined)
           }}
           onDragEnd={(event) => {
+            if (sessionPaneDrag?.shouldSuppressReorder()) return
             const current = visibleTabIds()
             const source = event.operation.source
 
             if (event.canceled || !isSortable(source)) return
 
-            const { initialIndex, index } = source
+            const initialIndex = source.initialIndex
+            const index = source.index
 
             if (initialIndex !== index) {
               props.onReorder(
                 mergeVisibleTabOrder(
                   props.tabs.map(tabKey),
                   current,
-                  arrayMove(current, source.initialIndex, source.index),
+                  arrayMove(current, initialIndex, index),
                 ),
               )
             }
@@ -714,6 +734,18 @@ export function TitlebarTabStrip(props: {
                 const closeOthers = () => props.onCloseTabs(others(), tab)
 
                 const closeAfter = () => props.onCloseTabs(after(), tab)
+
+                const paneId = () => appTabs.split.tabPane(id)
+
+                const canSplit = () => appTabs.split.canSplitWithTab(id, paneId())
+
+                const splitLeft = () => appTabs.split.splitPane(id, paneId(), "left")
+
+                const splitRight = () => appTabs.split.splitPane(id, paneId(), "right")
+
+                const splitUp = () => appTabs.split.splitPane(id, paneId(), "top")
+
+                const splitDown = () => appTabs.split.splitPane(id, paneId(), "bottom")
 
                 const element = () => ref
                 tabRefs.set(id, element)
@@ -747,6 +779,10 @@ export function TitlebarTabStrip(props: {
                       onClose={() => props.onClose(tab)}
                       onCloseOthers={others().length ? closeOthers : undefined}
                       onCloseAfter={after().length ? closeAfter : undefined}
+                      onSplitLeft={canSplit() ? splitLeft : undefined}
+                      onSplitRight={canSplit() ? splitRight : undefined}
+                      onSplitUp={canSplit() ? splitUp : undefined}
+                      onSplitDown={canSplit() ? splitDown : undefined}
                     />
                   )
                 }
@@ -766,6 +802,10 @@ export function TitlebarTabStrip(props: {
                     onClose={() => props.onClose(tab)}
                     onCloseOthers={others().length ? closeOthers : undefined}
                     onCloseAfter={after().length ? closeAfter : undefined}
+                    onSplitLeft={canSplit() ? splitLeft : undefined}
+                    onSplitRight={canSplit() ? splitRight : undefined}
+                    onSplitUp={canSplit() ? splitUp : undefined}
+                    onSplitDown={canSplit() ? splitDown : undefined}
                   />
                 )
               }}

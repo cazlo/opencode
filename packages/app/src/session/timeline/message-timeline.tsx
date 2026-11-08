@@ -30,6 +30,7 @@ import { parseCommentNote, readPromptPresentation } from "@/composer/comment-not
 import { parseVoiceDelegation } from "./voice-delegation"
 import { useCommand } from "@/shell/commands/command"
 import { usePluginScoped } from "@/runtime/plugin/commands"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import {
   SessionAncestorTrail,
   SessionHeaderLayout,
@@ -137,6 +138,7 @@ function MessageTimelineView(
   const language = useLanguage()
   const command = useCommand()
   const pluginScoped = usePluginScoped()
+  const routeParams = useSessionRouteParams()
   const server = useServer()
   const data = server.ctx.data
   const sdk = useWorkspaceLocation()
@@ -300,7 +302,7 @@ function MessageTimelineView(
   }
 
   command.register(() =>
-    props.active === false || props.hideHeader
+    !routeParams.focused || props.active === false || props.hideHeader
       ? []
       : [
           {

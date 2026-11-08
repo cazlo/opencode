@@ -5,7 +5,7 @@ import { abort } from "@opencode/util/abort"
 import { isFileNotFoundError } from "@opencode/client/promise"
 import { createSimpleContext } from "@opencode/ui/context"
 import { showToast } from "@/shell/notifications/toast"
-import { useParams } from "@solidjs/router"
+import { useSessionRouteParams } from "@/shell/routes/session-params"
 import { getDirectory, getFilename } from "@opencode/util/path"
 import { useWorkspaceLocation } from "@/workspaces/location"
 import { useLanguage } from "@/runtime/i18n/language"
@@ -28,7 +28,7 @@ import {
 } from "./content-machine"
 import { createFileViewCache } from "./view-cache"
 import { useServerSDK } from "@/runtime/server/client"
-import { useData } from "@/runtime/server/current"
+import { useData, useServer } from "@/runtime/server/current"
 import { formatServerError } from "@/runtime/server/errors"
 import { createFileTreeStore } from "./tree-store"
 import { invalidateFromWatcher } from "./watcher"
@@ -43,12 +43,15 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
   gate: false,
   init: () => {
     const sdk = useWorkspaceLocation()
-    const params = useParams()
+    const params = useSessionRouteParams()
     const serverSDK = useServerSDK()
     const data = useData()
     const platform = usePlatform()
     const language = useLanguage()
     const attachment = usePluginAttachment()
+    const server = useServer()
+    // This pane's session, so a background pane's files never come from the routed one.
+    const session = () => `${server.key}\n${params.id}`
 
     const scope = createMemo(() => sdk().directory)
     const path = createPathHelpers(scope)
@@ -136,7 +139,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       if (effect.type === "cache.store") {
         cache.touch(effect.path, approxBytes(effect.content))
         // The file just read and the visible tab keep their content.
-        const active = attachment.files.active()
+        const active = attachment.files.active(session())
         const evicted = cache.evict(new Set(active ? [effect.path, active] : [effect.path]))
 
         if (evicted.length > 0) dispatch({ type: "cache.evicted", paths: evicted })
@@ -205,7 +208,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       if (reads.get(file) === controller) reads.delete(file)
     }
 
-    const opened = (file: string) => attachment.files.opened().includes(file)
+    const opened = (file: string) => attachment.files.opened(session()).includes(file)
 
     // The machine holds one directory's files. Drop them as soon as the directory changes, before any effect of the
     // same update reads the new one: a file tab can load its file before a later watcher runs, and a reset after that
@@ -313,7 +316,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
         invalidateFromWatcher(event, {
           normalize: path.normalize,
           hasFile: (file) => fileEntry(file) !== undefined,
-          isOpen: (file) => attachment.files.opened().includes(file),
+          isOpen: (file) => attachment.files.opened(session()).includes(file),
           loadFile: (file) => {
             void load(file, { force: true, silent: true })
           },
@@ -345,7 +348,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     }
 
     createEffect(() => {
-      const stop = serverSDK.event.on("server.connected", () => attachment.files.opened().forEach(watch))
+      const stop = serverSDK.event.on("server.connected", () => attachment.files.opened(session()).forEach(watch))
 
       onCleanup(stop)
     })

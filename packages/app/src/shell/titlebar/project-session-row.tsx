@@ -16,6 +16,8 @@ import { errorMessage } from "@/shell/layout/helpers"
 import { showToast } from "@/shell/notifications/toast"
 import { sessionTreeIDs } from "@/session/requests/session-request-tree"
 import { sessionLabel } from "@/session/title"
+import type { SessionSplitSide } from "@/shell/tabs/split-tree"
+import { tabKey, useTabs } from "@/shell/tabs/tabs"
 import { notifySessionTabsRemoved } from "./session-events"
 import "./tab-nav.css"
 
@@ -32,7 +34,20 @@ export function ProjectSessionRow(props: {
 
   const dialog = useDialog()
 
+  const tabs = useTabs()
+
   const queryClient = useQueryClient()
+
+  const splitTabKey = () => tabKey({ type: "session", server: props.server, sessionId: props.session.id })
+
+  const canSplit = () => tabs.split.canSplitWithTab(splitTabKey(), tabs.split.activePane())
+
+  const splitSession = (side: SessionSplitSide) => {
+    tabs.split.splitPane(splitTabKey(), tabs.split.activePane(), side, undefined, {
+      server: props.server,
+      sessionId: props.session.id,
+    })
+  }
 
   const connection = () => global.servers.list().find((conn) => ServerConnection.key(conn) === props.server)
 
@@ -129,6 +144,9 @@ export function ProjectSessionRow(props: {
         as="button"
         type="button"
         data-titlebar-tab-action
+        data-session-drag-server={props.server}
+        data-session-drag-id={props.session.id}
+        data-session-drag-title={sessionLabel(props.session)}
         data-state={props.active ? "pressed" : undefined}
         class="relative flex h-7 w-full shrink-0 items-center gap-2 rounded-[6px] ps-8 pe-2 text-start text-[13px] leading-[var(--line-height-compact)] font-medium focus-visible:outline-none"
         classList={{ "text-v2-text-text-base": props.active, "text-v2-text-text-faint": !props.active }}
@@ -173,6 +191,19 @@ export function ProjectSessionRow(props: {
             onSelect={() => dialog.show(() => <RenameDialog title={sessionLabel(props.session)} onRename={rename} />)}
           >
             {language.t("common.rename")}
+          </Menu.Item>
+          <Menu.Separator />
+          <Menu.Item disabled={!canSplit()} onSelect={() => splitSession("left")}>
+            {language.t("common.splitLeft")}
+          </Menu.Item>
+          <Menu.Item disabled={!canSplit()} onSelect={() => splitSession("right")}>
+            {language.t("common.splitRight")}
+          </Menu.Item>
+          <Menu.Item disabled={!canSplit()} onSelect={() => splitSession("top")}>
+            {language.t("common.splitUp")}
+          </Menu.Item>
+          <Menu.Item disabled={!canSplit()} onSelect={() => splitSession("bottom")}>
+            {language.t("common.splitDown")}
           </Menu.Item>
           <Menu.Separator />
           <Menu.Item data-variant="critical" disabled={!ctx()} onSelect={() => dialog.show(() => <DeleteDialog />)}>

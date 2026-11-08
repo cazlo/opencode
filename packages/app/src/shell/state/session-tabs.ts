@@ -35,7 +35,7 @@ const paneTabs = (tabs: SessionTabs, pane: SessionPane) => tabs.all.filter((tab)
  */
 export function placeSessionTabs(previous: SessionTabs, next: SessionTabs, target?: SessionPaneTarget): SessionTabs {
   const kept = new Set(previous.all)
-  const placement = next.panes ? next : previous
+  const placement = "panes" in next ? next : previous
 
   const placed = (tab: string, index: number): SessionPane => {
     if (kept.has(tab)) return sessionTabPane(placement, tab)

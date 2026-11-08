@@ -3,6 +3,7 @@ import {
   createComputed,
   createEffect,
   createMemo,
+  createRoot,
   createSignal,
   getOwner,
   on,
@@ -123,6 +124,9 @@ type Attached = {
   servers: Accessor<readonly string[]>
   server: (id: string) => ServerRef | undefined
 }
+
+// The screens sharing the panel sidebar preference, and the root that owns it while any of them is mounted.
+type SharedSidebar = { users: number; dispose?: () => void }
 
 /**
  * HostApis the host owns. Session and layout attach once the app interface mounts; until then their reads return
@@ -523,10 +527,13 @@ export function createPluginAttachment(apis: HostApis) {
   const menu = createSessionPanelMenu()
   const desktop = createMediaQuery("(min-width: 768px)")
   const narrow = () => !desktop()
-  // The mounted session screen, from its first render, and its object for the session it routes once it has mounted;
-  // one screen is mounted at a time.
-  const [screen, setScreen] = createSignal<SessionScreen>()
-  const [routedView, setRoutedView] = createSignal<Accessor<MountedSession>>()
+  // Mounted session screens and the objects for the sessions they route; in split view multiple screens may mount.
+  const [screens, setScreens] = createSignal<readonly SessionScreen[]>([])
+
+  const [mountedViews, setMountedViews] = createSignal<
+    readonly { readonly view: Accessor<MountedSession>; readonly screen?: SessionScreen }[]
+  >([])
+
   const refs = new Map<string, SessionRef>()
 
   const connection = (id: string) => global.servers.list().find((item) => ServerConnection.key(item) === id)
@@ -631,12 +638,13 @@ export function createPluginAttachment(apis: HostApis) {
     return value.type === "session" ? `${value.server}\n${value.sessionId}` : undefined
   })
 
-  const current = createMemo(() => {
-    const key = routed()
-    const view = routedView()?.()
+  const mountedEntry = (key: string | undefined) =>
+    key ? mountedViews().find((item) => item.view().key === key) : undefined
 
-    return key && view?.key === key ? view : undefined
-  })
+  const currentEntry = createMemo(() => mountedEntry(routed()))
+  const current = createMemo(() => currentEntry()?.view())
+  const screen = createMemo(() => currentEntry()?.screen ?? screens().at(-1))
+  const screenFor = (session: SessionRef) => mountedEntry(session.key)?.screen ?? screen()
 
   const scope = (id: string) => {
     if (!connection(id)) throw new Error(`Server ${id} is unavailable`)
@@ -746,11 +754,7 @@ export function createPluginAttachment(apis: HostApis) {
     return host.items(BuiltinPanel).find((item) => item.plugin === plugin)
   }
 
-  const mountedSession = (session: SessionRef) => {
-    const view = current()
-
-    return view?.key === session.key ? view : undefined
-  }
+  const mountedSession = (session: SessionRef) => mountedEntry(session.key)?.view()
 
   // The narrow-screen view belongs to the routed, mounted session for one routing visit, and reads as the conversation
   // once another visit starts. A view selected for a session that is not routed (e.g. a file link that opens Files on
@@ -778,7 +782,7 @@ export function createPluginAttachment(apis: HostApis) {
   // The side tabs a mounted session lists right now, plus `adding` as if it were stored; unmounted sessions have none.
   const listed = (session: SessionRef, value: string, adding?: string) => {
     const view = mountedSession(session)
-    const currentScreen = screen()
+    const currentScreen = screenFor(session)
 
     if (!view || !currentScreen) return []
     const all = layout.panel.state(value).all
@@ -898,7 +902,7 @@ export function createPluginAttachment(apis: HostApis) {
     const tab = listed(session, value).find((entry) => entry.key === key)?.tab
     const all = layout.panel.state(value).all
     const view = mountedSession(session)
-    const currentScreen = screen()
+    const currentScreen = screenFor(session)
 
     const entry =
       view &&
@@ -920,23 +924,38 @@ export function createPluginAttachment(apis: HostApis) {
 
   const close = (key: string, session: SessionRef) => withLocated(session, (value) => closeAt(key, session, value))
 
-  // The routed session's side region, which knows the fallback selection the stored state lacks.
-  const [region, setRegion] = createSignal<Region>()
+  // Mounted sessions' side regions, which know the fallback selection the stored state lacks.
+  const [regions, setRegions] = createSignal<readonly Region[]>([])
+
+  const regionFor = (key: string | undefined) =>
+    (key ? regions().find((item) => item.sessionKey?.() === key) : undefined) ?? regions().at(-1)
+
+  // A draft route has no side region of its own, so it must not borrow another pane's.
+  const region = createMemo(() => {
+    const key = routed()
+
+    return key ? regionFor(key) : undefined
+  })
+
   // The session screen's inner sidebar preference, which its side panels share.
   const [sidebar, setSidebar] = createSignal<PanelSidebar>()
+  const sidebars: SharedSidebar = { users: 0 }
 
-  const opened = createMemo(
-    () => Array.from(new Set((region()?.entries() ?? []).flatMap((entry) => entry.tab.file ?? []))),
-    [],
-    { equals: same },
-  )
+  const openedFiles = (value: Region | undefined) =>
+    Array.from(new Set((value?.entries() ?? []).flatMap((entry) => entry.tab.file ?? [])))
+
+  const opened = createMemo(() => openedFiles(region()), [], { equals: same })
+
+  // A pane asks for its own session's files by key. Without a mounted region (e.g. a draft pane) it gets none, rather
+  // than the routed session's.
+  const regionOfSession = (key: string) => regions().find((item) => item.sessionKey?.() === key)
 
   const state = (key: string, session: SessionRef): PanelState => {
     const value = stateKey(session)
 
     if (!value) return "closed"
     const panel = layout.panel.state(value)
-    const mounted = mountedSession(session) ? region() : undefined
+    const mounted = mountedSession(session) ? regionFor(session.key) : undefined
     const pane = mounted ? mounted.paneOf(key) : sessionTabPane(panel, key)
     const shown = mounted ? mounted.pane(pane).active() : sessionPaneTab(panel, pane)
 
@@ -948,7 +967,11 @@ export function createPluginAttachment(apis: HostApis) {
   const hide = (key: string, session: SessionRef) =>
     withLocated(session, (value) => {
       if (state(key, session) !== "visible") return
-      const pane = mountedSession(session) ? region()?.paneOf(key) : sessionTabPane(layout.panel.state(value), key)
+
+      const pane = mountedSession(session)
+        ? regionFor(session.key)?.paneOf(key)
+        : sessionTabPane(layout.panel.state(value), key)
+
       tabs.setRegion(shellTab(session), pane === "bottom" ? "bottom" : "side", false)
     })
 
@@ -1211,24 +1234,39 @@ export function createPluginAttachment(apis: HostApis) {
     /** Opens and selects a side tab by key, as a reopened closed tab comes back. */
     openTab: (key: string, session: SessionRef) => open(key, session, { tab: "select" }),
     region(value: Region) {
-      setRegion(() => value)
+      setRegions((list) => [...list.filter((item) => item !== value), value])
 
       return () => {
-        if (region() === value) setRegion(undefined)
+        setRegions((list) => list.filter((item) => item !== value))
       }
     },
     /** The session screen's inner sidebar preference, which `Layout.sidebar` reads. */
-    sidebar(value: PanelSidebar) {
-      setSidebar(() => value)
+    sidebar(create: () => PanelSidebar) {
+      // The first screen creates the preference; later screens share it until the last one unmounts.
+      const value =
+        untrack(sidebar) ??
+        createRoot((dispose) => {
+          sidebars.dispose = dispose
 
-      return () => {
-        if (sidebar() === value) setSidebar(undefined)
+          return create()
+        })
+
+      setSidebar(() => value)
+      sidebars.users++
+
+      return {
+        value,
+        release() {
+          if (--sidebars.users > 0) return
+          sidebars.dispose?.()
+          setSidebar(undefined)
+        },
       }
     },
     /** Workspace files the routed session's side tabs show, in strip order, and the selected one. */
     files: {
-      opened,
-      active: () => region()?.selected()?.tab.file,
+      opened: (session?: string) => (session ? openedFiles(regionOfSession(session)) : opened()),
+      active: (session?: string) => (session ? regionOfSession(session) : region())?.selected()?.tab.file,
     },
     mobile: {
       current: mobileView,
@@ -1240,18 +1278,19 @@ export function createPluginAttachment(apis: HostApis) {
     },
     /** A screen started rendering: `Screen.current` returns it only while its session matches the route. */
     screen(value: SessionScreen) {
-      setScreen(() => value)
+      setScreens((list) => [...list.filter((item) => item !== value), value])
 
       return () => {
-        if (screen() === value) setScreen(undefined)
+        setScreens((list) => list.filter((item) => item !== value))
       }
     },
     /** A session screen mounted: `Sessions.current` reads its object for the routed session. */
-    mount(view: Accessor<MountedSession>) {
-      setRoutedView(() => view)
+    mount(view: Accessor<MountedSession>, mountedScreen?: SessionScreen) {
+      const entry = { view, screen: mountedScreen }
+      setMountedViews((list) => [...list.filter((item) => item.view !== view), entry])
 
       return () => {
-        if (routedView() === view) setRoutedView(undefined)
+        setMountedViews((list) => list.filter((item) => item.view !== view))
       }
     },
     /** Starts loading every plugin's declared session stores for a session the screen routes. */

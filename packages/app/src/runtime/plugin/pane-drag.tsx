@@ -26,6 +26,8 @@ export function createPaneDrag(input: {
   /** Panes that hold tabs; a pane without them is created by dropping on its zone. */
   shown: (pane: SessionPane) => boolean
   drop: (key: string, target: PaneDropTarget) => void
+  /** Optional root container scoping hit-testing to this session pane in split view. */
+  root?: Accessor<HTMLElement | undefined>
 }) {
   const [paneDrag, setPaneDrag] = createSignal<PaneDragState>(INITIAL_PANE_DRAG_STATE)
   const dragging = createMemo(() => selectDraggingKey(paneDrag()))
@@ -34,11 +36,13 @@ export function createPaneDrag(input: {
   let clearSuppression: (() => void) | undefined
 
   const hit = (x: number, y: number, key: string): PaneDropTarget | undefined => {
+    const scope = input.root?.() ?? document
+
     const inside = (rect: DOMRect) =>
       rect.width > 0 && rect.height > 0 && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
 
     // A scrolled strip, or one wider than its animating pane, extends past what is on screen.
-    const strip = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-strip]")).find((element) =>
+    const strip = Array.from(scope.querySelectorAll<HTMLElement>("[data-pane-strip]")).find((element) =>
       inside(visibleRect(element)),
     )
 
@@ -73,7 +77,7 @@ export function createPaneDrag(input: {
       }
     }
 
-    const content = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-content]")).find((element) =>
+    const content = Array.from(scope.querySelectorAll<HTMLElement>("[data-pane-content]")).find((element) =>
       inside(element.getBoundingClientRect()),
     )
 
@@ -92,8 +96,8 @@ export function createPaneDrag(input: {
       return { pane: contentPane, strip: false, rect: toRect(rect) }
     }
 
-    const chat = document.querySelector<HTMLElement>('[data-slot="session-chat-panel"]')?.getBoundingClientRect()
-    const row = document.querySelector<HTMLElement>("[data-pane-row]")?.getBoundingClientRect()
+    const chat = scope.querySelector<HTMLElement>('[data-slot="session-chat-panel"]')?.getBoundingClientRect()
+    const row = scope.querySelector<HTMLElement>("[data-pane-row]")?.getBoundingClientRect()
 
     if (!chat || !row || input.shown("bottom") || !inside(chat) || y < chat.bottom - chat.height / 4) return
     const height = Math.min(280, row.height / 3)
