@@ -7,7 +7,10 @@ import { useLanguage } from "@/runtime/i18n/language"
 import { formatElapsed } from "@/session/composer/activity-chips"
 import { SubagentStatusIcon } from "@/session/composer/subagent-bar"
 import { sessionTitle } from "@/session/title"
-import type { SubagentRow } from "./tree"
+import { subagentCounts, type SubagentRow } from "./tree"
+
+// Finished subagents pile up in long orchestrations, so only the most recent show until the list is expanded.
+const COMPLETED_PREVIEW = 3
 
 // A subagent tab's header: its full title, which the tab's label truncates, and the way to its own session.
 export function SubagentHeader(props: { title: string; onOpenFull: () => void }) {
@@ -53,17 +56,29 @@ export function SubagentList(props: {
     onCleanup(() => clearInterval(timer))
   })
 
-  const sections = () =>
-    [
-      {
-        title: language.plural("session.subagents.running", props.groups.running.length),
-        rows: props.groups.running,
-      },
-      {
-        title: language.plural("session.subagents.completed", props.groups.completed.length),
-        rows: props.groups.completed,
-      },
-    ] as const
+  const counts = () => subagentCounts(props.groups)
+  const [showAllCompleted, setShowAllCompleted] = createSignal(false)
+  const hiddenCompleted = () => Math.max(0, props.groups.completed.length - COMPLETED_PREVIEW)
+
+  // Once nothing is hidden, the next overflow starts collapsed again.
+  createEffect(() => {
+    if (hiddenCompleted() === 0) setShowAllCompleted(false)
+  })
+
+  // A fixed list of sections with reactive fields, so a count, order or toggle change updates the rows in place
+  // instead of recreating every button, which would drop focus and swallow clicks.
+  const sections = [
+    {
+      title: () => language.plural("session.subagents.running", counts().running),
+      rows: () => props.groups.running,
+      hidden: () => 0,
+    },
+    {
+      title: () => language.plural("session.subagents.completed", counts().completed),
+      rows: () => (showAllCompleted() ? props.groups.completed : props.groups.completed.slice(0, COMPLETED_PREVIEW)),
+      hidden: hiddenCompleted,
+    },
+  ]
 
   return (
     <Show
@@ -76,20 +91,20 @@ export function SubagentList(props: {
       }
     >
       <div data-scrollable class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        <For each={sections()}>
+        <For each={sections}>
           {(section) => (
-            <Show when={section.rows.length > 0}>
+            <Show when={section.rows().length > 0}>
               <section>
                 <h3 class="px-2 pb-1 pt-3 text-[12px] font-medium leading-[var(--line-height-compact)] tabular-nums text-v2-text-text-faint">
-                  {section.title}
+                  {section.title()}
                 </h3>
                 <ul>
-                  <For each={section.rows}>
+                  <For each={section.rows()}>
                     {(row) => (
                       <li>
                         <button
                           type="button"
-                          class="flex h-11 w-full min-w-0 flex-col justify-center gap-0.5 rounded-[6px] pe-2 text-start leading-[var(--line-height-compact)] hover:bg-v2-overlay-simple-overlay-hover"
+                          class="flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 rounded-[6px] py-1.5 pe-2 text-start leading-[var(--line-height-compact)] hover:bg-v2-overlay-simple-overlay-hover"
                           style={{ "padding-inline-start": `${8 + Math.min(row.depth, 4) * 16}px` }}
                           onClick={() => props.onSelect(row.id)}
                         >
@@ -106,11 +121,11 @@ export function SubagentList(props: {
                               <bdi dir="auto">{sessionTitle(row.title) ?? language.t("session.tab.session")}</bdi>
                             </span>
                           </span>
-                          <span class="flex w-full min-w-0 items-center gap-1.5 ps-6 text-[12px] font-[440] tabular-nums text-v2-text-text-faint">
+                          <span class="flex w-full min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 ps-6 text-[12px] font-[440] tabular-nums text-v2-text-text-faint">
                             <Show when={row.agent}>
                               {(agent) => (
                                 <>
-                                  <span class="min-w-0 truncate capitalize">{agent()}</span>
+                                  <span class="shrink-0 capitalize">{agent()}</span>
                                   <span aria-hidden="true" class="shrink-0">
                                     ·
                                   </span>
@@ -139,6 +154,18 @@ export function SubagentList(props: {
                     )}
                   </For>
                 </ul>
+                <Show when={section.hidden() > 0}>
+                  <button
+                    type="button"
+                    class="flex h-8 w-full items-center rounded-[6px] ps-8 pe-2 text-start text-[12px] font-[440] leading-[var(--line-height-compact)] tabular-nums text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-text-text-base"
+                    aria-expanded={showAllCompleted()}
+                    onClick={() => setShowAllCompleted((value) => !value)}
+                  >
+                    {showAllCompleted()
+                      ? language.t("session.subagents.showLess")
+                      : language.plural("session.subagents.showMore", section.hidden())}
+                  </button>
+                </Show>
               </section>
             </Show>
           )}

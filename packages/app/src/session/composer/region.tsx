@@ -45,7 +45,7 @@ import { sessionTodos, todoFinished } from "./todos"
 import { useOpenSessionRoute } from "../session-identity-header"
 import { resolveSessionComposerSelection } from "./selection"
 import { SubagentBar } from "./subagent-bar"
-import { createSubagentModelLabel } from "../subagents/model-label"
+import { createSubagentContextPercent, createSubagentModelLabel } from "../subagents/model-label"
 import { createSessionRequestModel } from "../requests/model"
 import type { Region } from "@/runtime/plugin/panels"
 import { SessionLocationMissing } from "./location-missing"
@@ -540,6 +540,11 @@ export function ActiveSessionComposerRegion(props: {
     messages: props.session.history.messages,
   })
 
+  const subagentContextPercent = createSubagentContextPercent({
+    info: props.session.data.info,
+    messages: props.session.history.messages,
+  })
+
   const subagentStatus = () => {
     if (props.session.data.working()) return "running"
 
@@ -556,6 +561,7 @@ export function ActiveSessionComposerRegion(props: {
               agent={info().agent}
               model={subagentModel()}
               status={subagentStatus()}
+              contextPercent={subagentContextPercent()}
               started={info().time.created}
               ended={subagentStatus() === "running" ? undefined : (info().time.idle ?? info().time.updated)}
               onBack={props.model.region.openParent}

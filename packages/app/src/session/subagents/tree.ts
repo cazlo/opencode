@@ -1,5 +1,5 @@
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client/promise"
-import { lastAssistantWithUsage } from "@opencode/client/solid"
+import { contextPercent, contextTokens, lastAssistantWithUsage } from "@opencode/client/solid"
 import type { SubagentStatus } from "@/session/composer/subagent-bar"
 
 export type SubagentRow = {
@@ -56,7 +56,21 @@ export function subagentGroups(input: {
 
   return {
     running: trees.filter((rows) => rows.some((row) => row.status === "running")).flat(),
-    completed: trees.filter((rows) => rows.every((row) => row.status !== "running")).flat(),
+    // Most recently finished first; a tree finishes with its last subagent. The sort is stable, so ties keep the
+    // newest-started first.
+    completed: trees
+      .filter((rows) => rows.every((row) => row.status !== "running"))
+      .map((rows) => ({ rows, ended: Math.max(...rows.map((row) => row.ended ?? row.started)) }))
+      .toSorted((a, b) => b.ended - a.ended)
+      .flatMap((tree) => tree.rows),
+  }
+}
+
+// Running rows share a section with the finished subagents below or beside them, so only the running ones count.
+export function subagentCounts(groups: { running: readonly SubagentRow[]; completed: readonly SubagentRow[] }) {
+  return {
+    running: groups.running.filter((row) => row.status === "running").length,
+    completed: groups.completed.length,
   }
 }
 
@@ -73,26 +87,18 @@ export function subagentEnded(info: SessionInfo, messages: readonly SessionMessa
   return idle ? idle.time.created : info.time.updated
 }
 
+// Percent of its compaction threshold the subagent's latest step fills, as every context percentage is measured.
 export function subagentContextPercent(
   info: SessionInfo | undefined,
   messages: readonly SessionMessageInfo[],
-  contextLimit: (model: { readonly providerID: string; readonly id: string }) => number | undefined,
+  threshold: (model: { readonly providerID: string; readonly id: string }) => number | undefined,
 ) {
   const message = lastAssistantWithUsage(messages, info?.revert?.messageID)
 
   if (!message) return undefined
-
-  const total =
-    message.tokens.input +
-    message.tokens.output +
-    message.tokens.reasoning +
-    message.tokens.cache.read +
-    message.tokens.cache.write
+  const total = contextTokens(message.tokens)
 
   if (total <= 0) return undefined
-  const limit = contextLimit(message.model)
 
-  if (!limit || limit <= 0) return undefined
-
-  return Math.round((total / limit) * 100)
+  return contextPercent(total, threshold(message.model))
 }

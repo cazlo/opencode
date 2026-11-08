@@ -48,7 +48,7 @@ import {
   type TimelineHistoryEvent,
 } from "@/session/timeline/history-machine"
 import { createSubagentGroups, type SessionSubagentsModel } from "./controller"
-import { createSubagentModelLabel } from "./model-label"
+import { createSubagentContextPercent, createSubagentModelLabel } from "./model-label"
 import { SubagentHeader, SubagentList } from "./pane"
 import { subagentEnded, subagentOutcome } from "./tree"
 
@@ -243,6 +243,7 @@ function SubagentTranscript(props: {
 
   const status = () => (data.session.status(id) === "running" ? "running" : subagentOutcome(info(), messages()))
   const model = createSubagentModelLabel({ info, messages })
+  const contextPercent = createSubagentContextPercent({ info, messages })
 
   return (
     <>
@@ -331,6 +332,7 @@ function SubagentTranscript(props: {
             agent={session().agent}
             model={model()}
             status={status()}
+            contextPercent={contextPercent()}
             started={session().time.created}
             ended={status() === "running" ? undefined : subagentEnded(session(), messages())}
             stopping={load.stopping}

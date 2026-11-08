@@ -1,5 +1,6 @@
 import { createComputed, createEffect, createMemo, type Accessor } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
+import { compactionThreshold } from "@opencode/client/solid"
 import type { MountedSession, SessionScreen } from "@opencode/plugin/gui"
 import { BuiltinPanel, type SubagentState } from "@opencode/plugin/gui/builtin"
 import { syncWhileBooting } from "@/providers/catalog/providers"
@@ -150,7 +151,7 @@ export function createSubagentGroups(routed: Accessor<string | undefined>) {
   const sdk = useServerSDK()
   const workspaceLocation = useWorkspaceLocation()
 
-  const contextLimit = (directory: string | undefined, ref: { readonly providerID: string; readonly id: string }) => {
+  const thresholdFor = (directory: string | undefined, ref: { readonly providerID: string; readonly id: string }) => {
     const dir = directory || workspaceLocation().directory
     const models = data.location.model.list(dir ? { directory: dir } : undefined)
 
@@ -161,7 +162,7 @@ export function createSubagentGroups(routed: Accessor<string | undefined>) {
         (item) => item.providerID === ref.providerID && item.id === ref.id && item.status !== "deprecated",
       ) ?? models.findLast((item) => item.providerID === ref.providerID && item.id === ref.id)
 
-    return model?.limit.context
+    return compactionThreshold(model?.limit)
   }
 
   const built = createMemo(() => {
@@ -179,7 +180,7 @@ export function createSubagentGroups(routed: Accessor<string | undefined>) {
       ended: (info) => subagentEnded(info, data.session.message.list(info.id)),
       contextPercent: (info) =>
         subagentContextPercent(info, data.session.message.list(info.id), (model) =>
-          contextLimit(info.location.directory, model),
+          thresholdFor(info.location.directory, model),
         ),
     })
   })

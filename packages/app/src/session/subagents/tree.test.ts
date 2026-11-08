@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client/promise"
 import type { SubagentStatus } from "@/session/composer/subagent-bar"
-import { subagentContextPercent, subagentEnded, subagentGroups, subagentOutcome } from "./tree"
+import { subagentCounts, subagentContextPercent, subagentEnded, subagentGroups, subagentOutcome } from "./tree"
 
 function info(id: string, parentID: string | undefined, created: number, extra: Partial<SessionInfo> = {}) {
   // SAFETY: the fixtures set every field these functions read; the branded ids are plain strings in them.
@@ -31,7 +31,8 @@ const names = (rows: { id: string; depth: number }[]) => rows.map((row) => `${ro
 
 test.each<Case>([
   {
-    name: "splits running from completed, newest first, with children after their parent",
+    // "old" started first but its last child finished last (updated 10), so its tree leads the completed section.
+    name: "splits running from completed, most recently finished first, with children after their parent",
     rootID: "root",
     sessions: [
       info("old", "root", 1),
@@ -42,7 +43,7 @@ test.each<Case>([
     ],
     status: { running: "running", old: "succeeded", new: "failed", "old-a": "succeeded", "old-b": "interrupted" },
     running: ["running:0"],
-    completed: ["new:0", "old:0", "old-a:1", "old-b:1"],
+    completed: ["old:0", "old-a:1", "old-b:1", "new:0"],
   },
   {
     name: "counts a completed subagent as running while a subagent below it runs",
@@ -93,6 +94,18 @@ test.each<Case>([
     running: input.running,
     completed: input.completed,
   })
+})
+
+test("counts only the running subagents in the running section", () => {
+  const groups = subagentGroups({
+    rootID: "root",
+    sessions: [info("parent", "root", 1), info("child", "parent", 2), info("old", "root", 0)],
+    // SAFETY: every session id in this fixture has an entry, so the lookup is always a SubagentStatus.
+    status: (id) => ({ parent: "running", child: "succeeded", old: "failed" })[id] as SubagentStatus,
+  })
+
+  expect(subagentCounts(groups)).toEqual({ running: 1, completed: 1 })
+  expect(groups.running).toHaveLength(2)
 })
 
 test("a running subagent has no end time and a finished one ends when it went idle", () => {
